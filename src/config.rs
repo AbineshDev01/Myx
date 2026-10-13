@@ -1,10 +1,21 @@
 //! User settings from `~/.config/myx/config.toml`. Missing, empty or malformed
 //! all fall back to defaults — a typo must never lock someone out of the app.
 
-use librespot_playback::config::Bitrate;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+/// The quality levels Spotify serves. A local stand-in
+/// for the librespot enum: Soloist owns playback (and its
+/// own quality setting), so myx only parses, snaps and
+/// reports the configured value — the enum keeps that
+/// mapping testable without a sound card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bitrate {
+    Bitrate96,
+    Bitrate160,
+    Bitrate320,
+}
 
 #[derive(Deserialize)]
 #[serde(default)]
@@ -34,6 +45,32 @@ pub struct Config {
     /// key is missing; the first-run template sets it, so new installs start
     /// transparent. `T` in the app flips it and rewrites the line.
     pub transparent: bool,
+    /// Soloist playback backend settings.
+    pub soloist: SoloistConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SoloistConfig {
+    pub api_key: Option<String>,
+    pub device_name: String,
+    pub executable: String,
+    pub route_audio: bool,
+    pub ws: Option<String>,
+    pub data_dir: Option<PathBuf>,
+}
+
+impl Default for SoloistConfig {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            device_name: "myx soloist".to_string(),
+            executable: "soloist".to_string(),
+            route_audio: true,
+            ws: None,
+            data_dir: None,
+        }
+    }
 }
 
 impl Default for Config {
@@ -46,6 +83,7 @@ impl Default for Config {
             bitrate: 160,
             normalize_volume: false,
             transparent: false,
+            soloist: SoloistConfig::default(),
         }
     }
 }

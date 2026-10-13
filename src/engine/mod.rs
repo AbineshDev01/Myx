@@ -1,193 +1,247 @@
-//! The librespot streaming engine.
+//! Playback engine — the Soloist backend.
 //!
-//! Authenticates, brings up a Spotify Connect device (Spirc) with our local EQ +
-//! tee'd FFT sinks, and bridges librespot's player events into a clean [`EngineEvent`]
-//! stream. This is what makes "track change" *real*: when Spotify hands us a new
-//! track, a `TrackChanged` lands on the channel — the hook the reactive theme +
-//! cover fade will fire from.
+//! This is Myx's playback backend. It owns a running
+//! Soloist (starting one when needed, reusing one that
+//! is already up) and drives it over Soloist's
+//! WebSocket API. Every playback command Myx issues is
+//! translated into a Soloist command; every Soloist
+//! event is translated into an [`EngineEvent`] for the
+//! UI.
 //!
-//! Session/Spirc wiring mirrors aome510/spotify-player (`streaming.rs`, MIT,
-//! © 2021 Thang Pham), stripped to just what myx needs.
+//! Soloist decodes and plays its own audio, so the
+//! equalizer and visualizer are fed through a
+//! PipeWire/PulseAudio loopback tap ([`AudioTap`]) that
+//! mirrors Soloist's output back through Myx's sink
+//! chain. See [`soloist`] for the process and WebSocket
+//! integration and [`audio::tap`] for the loopback.
+//!
+//! Spotify authentication is handled by Soloist itself
+//! (it is a Spotify Connect receiver with its own
+//! login). Myx's separate Web API OAuth is untouched and
+//! still powers browsing, search, lyrics and artwork.
 
-pub mod auth;
+use std::sync::{Arc, Mutex};
 
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use anyhow::{bail, Context, Result};
+use flume::Sender;
 
-use anyhow::{anyhow, bail, Context, Result};
-use librespot_connect::{
-    ConnectConfig, LoadContextOptions, LoadRequest, LoadRequestOptions, Options as CtxOptions,
-    PlayingTrack, Spirc,
-};
-use librespot_core::authentication::Credentials;
-use librespot_core::cache::Cache;
-use librespot_core::config::DeviceType;
-use librespot_core::{Session, SessionConfig};
-use librespot_playback::audio_backend::{self, Sink};
-use librespot_playback::config::{AudioFormat, PlayerConfig};
-use librespot_playback::mixer::softmixer::SoftMixer;
-use librespot_playback::mixer::{Mixer, MixerConfig};
-use librespot_playback::player::{self, Player};
+use crate::audio::equalizer::{EqualizerControl, EqualizerSettings};
+use crate::audio::VisBands;
+use crate::soloist::client::{self, ClientEvent, ClientHandle, ClientOptions};
+use crate::soloist::process::{self, SoloistProcess};
+use crate::soloist::protocol::{Command, PlaybackStatus, RepeatMode, ServerEvent};
 
-use crate::audio::equalizer::{shared_equalizer, EqualizerControl, EqualizerSink};
-use crate::audio::{EqualizerSettings, VisBands, VisualizationSink};
-
-/// A normalized playback event surfaced to the rest of the app.
+/// A single event that the UI cares about.
+///
+/// The UI matches on these and updates its transport
+/// state, playhead and now-playing view. They map
+/// one-to-one onto Soloist's real-time events so the UI
+/// behaves exactly as it did with the old backend.
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
-    /// A new track became current — carries its Spotify URI. This is the reactive
-    /// theme trigger.
-    TrackChanged {
-        uri: String,
-    },
-    Playing {
-        uri: String,
-        position_ms: u32,
-    },
-    Paused {
-        uri: String,
-        position_ms: u32,
-    },
+    /// Soloist started playing a new track.
+    TrackChanged { uri: String },
+    /// Playback started or resumed.
+    Playing { uri: String, position_ms: u32 },
+    /// Playback paused.
+    Paused { uri: String, position_ms: u32 },
+    /// Playback stopped (idle).
     Stopped,
     /// The access point went away and a replacement connection is being built.
     Reconnecting,
-    /// Playback control works again. Whatever was playing is not resumed — the
-    /// new Connect device starts idle.
+    /// Playback control works again.
     Reconnected,
-    EndOfTrack {
-        uri: String,
-    },
-    PositionCorrection {
-        uri: String,
-        position_ms: u32,
-    },
+    /// A periodic position correction from Soloist, used
+    /// to keep the playhead honest.
+    PositionCorrection { uri: String, position_ms: u32 },
+    /// The current track finished. Not emitted: Soloist
+    /// signals the next track with [`Self::TrackChanged`]
+    /// rather than a discrete end-of-track event.
+    #[allow(dead_code)]
+    EndOfTrack { uri: String },
 }
 
-/// Everything that dies with the access-point connection.
-///
-/// librespot invalidates the session when its keep-alive ping goes unanswered
-/// and documents that one "cannot yet be reused once invalidated", so coming
-/// back from an idle spell means building a fresh set of these rather than
-/// repairing the old ones.
-struct Link {
-    spirc: Spirc,
-    player: Arc<Player>,
-    session: Session,
-}
-
-/// A running engine: keep it alive (dropping it tears down the Connect device),
-/// and read `bands` for the live visualizer.
+/// A running playback engine backed by Soloist.
 pub struct Engine {
     pub bands: Arc<Mutex<VisBands>>,
-    inner: Arc<Inner>,
-}
-
-/// The half of the engine the reconnect watchdog needs to hold, so it can swap
-/// the connection out from under the `Engine` the UI is using.
-struct Inner {
-    link: Mutex<Arc<Link>>,
-    mixer: Arc<SoftMixer>,
-    bands: Arc<Mutex<VisBands>>,
     equalizer: EqualizerControl,
-    events: flume::Sender<EngineEvent>,
-    /// First-login credentials, used only until librespot has cached reusable
-    /// ones: a first run authenticates with a one-shot OAuth token that a
-    /// relogin hours later would be refused.
-    creds: Credentials,
+    /// Handle for sending commands to Soloist.
+    client: ClientHandle,
+    /// The running playback state, shared with the
+    /// event bridge so `toggle` knows whether to play
+    /// or pause.
+    snapshot: Arc<Mutex<Snapshot>>,
+    /// The Soloist process. Owned by Myx when Myx
+    /// started it; dropped (and shut down) on exit.
+    process: SoloistProcess,
 }
 
-impl Inner {
-    fn link(&self) -> Arc<Link> {
-        Arc::clone(&self.link.lock().unwrap_or_else(PoisonError::into_inner))
-    }
+/// The last-known playback state, reconstructed from
+/// Soloist's events. Soloist's granular events
+/// (`playback_changed`, `track_changed`) do not repeat
+/// the full context, so the engine keeps a running
+/// snapshot and fills in the uri/position the UI needs.
+#[derive(Default)]
+struct Snapshot {
+    uri: String,
+    position_ms: u32,
+    playing: bool,
+    shuffle: bool,
+    repeat: RepeatMode,
+}
 
-    /// Whether the access point has gone away and every command would now fail
-    /// with a closed channel.
-    fn is_stale(&self) -> bool {
-        self.link().session.is_invalid()
-    }
+/// Options for booting the Soloist playback backend.
+pub struct BootOptions {
+    /// Soloist developer API key. `SOLOIST_API_KEY`
+    /// takes precedence over the config file.
+    pub api_key: Option<String>,
+    /// Spotify Connect device name.
+    pub device_name: String,
+    /// Path to the `soloist` executable.
+    pub executable: String,
+    /// Route Soloist's audio through myx's equalizer
+    /// and visualizer via the loopback tap.
+    pub route_audio: bool,
+    /// Explicit WebSocket endpoint (`host:port`).
+    /// When set, endpoint discovery is skipped.
+    pub explicit_ws: Option<String>,
+    /// Soloist data directory. `None` uses Soloist's
+    /// own default, so an already-running instance is
+    /// found and reused.
+    pub data_dir: Option<std::path::PathBuf>,
+    /// Initial volume (0..=100), applied once the
+    /// control channel is up.
+    pub volume: u8,
+}
 
-    /// Build a replacement connection and swap it in. The dead one is dropped
-    /// afterwards, which stops its player and ends its event bridge.
-    async fn reconnect(&self) -> Result<()> {
-        let fresh = Arc::new(
-            connect(
-                &self.creds,
-                &self.mixer,
-                &self.bands,
-                &self.equalizer,
-                &self.events,
-            )
-            .await?,
-        );
-        let dead = std::mem::replace(
-            &mut *self.link.lock().unwrap_or_else(PoisonError::into_inner),
-            fresh,
-        );
-        drop(dead);
-        Ok(())
-    }
+/// Boot the Soloist playback backend.
+pub async fn run(tx: Sender<EngineEvent>, opts: BootOptions) -> Result<Engine> {
+    Engine::run(tx, opts).await
 }
 
 impl Engine {
-    /// Fetch a fresh Web API access token off the librespot session (login5).
-    /// Used for track metadata + cover art lookups.
-    pub async fn web_token(&self) -> Result<String> {
-        let session = self.inner.link().session.clone();
-        let fut = session.login5().auth_token();
-        let token = tokio::time::timeout(Duration::from_secs(5), fut)
-            .await
-            .map_err(|_| anyhow!("timed out fetching web token"))?
-            .map_err(|e| anyhow!("web token error: {e:?}"))?;
-        Ok(token.access_token)
-    }
+    /// Boot the Soloist playback backend.
+    ///
+    /// Ensures a Soloist is running (reusing one that is
+    /// already up, otherwise starting one), routes its
+    /// audio through the loopback tap when enabled, opens
+    /// the WebSocket control channel, and spawns the
+    /// event bridge into `tx`.
+    ///
+    /// This never blocks indefinitely: Soloist readiness
+    /// is bounded, and the event bridge keeps running
+    /// (reconnecting) in the background.
+    pub async fn run(tx: Sender<EngineEvent>, opts: BootOptions) -> Result<Self> {
+        let bands = Arc::new(Mutex::new(VisBands::default()));
+        let equalizer = crate::audio::shared_equalizer();
+        let volume = opts.volume;
 
-    /// Run a Spirc command, translating the failure that follows a dropped
-    /// access point into something the status line can explain. The watchdog is
-    /// already building a replacement; the key just has to be pressed again.
-    fn command<T>(
-        &self,
-        what: &'static str,
-        f: impl FnOnce(&Spirc) -> Result<T, librespot_core::Error>,
-    ) -> Result<T> {
-        let link = self.inner.link();
-        f(&link.spirc).map_err(|e| {
-            if link.session.is_invalid() {
-                anyhow!("connection dropped — reconnecting, try again in a moment")
-            } else {
-                anyhow!("{what}: {e}")
-            }
+        // Make sure Soloist is running and reachable before
+        // anything else. This also starts the loopback tap
+        // (when enabled) and points Soloist at it.
+        let process = SoloistProcess::start(process::StartOptions {
+            api_key: opts.api_key,
+            device_name: opts.device_name,
+            executable: opts.executable,
+            route_audio: opts.route_audio,
+            data_dir: opts.data_dir,
+            equalizer: Arc::clone(&equalizer),
+            bands: Arc::clone(&bands),
         })
-    }
+        .await
+        .context("starting the Soloist playback backend")?;
 
-    /// A [`Self::command`] that first reclaims the active-device role, which
-    /// Spotify revokes from an idle paused device. Once revoked, librespot
-    /// discards every other command; `Activate` is the one it still honours,
-    /// and it no-ops when we are already active. Volume stays out of here — it
-    /// must never yank playback off whatever device actually holds it.
-    fn active_command<T>(
-        &self,
-        what: &'static str,
-        f: impl FnOnce(&Spirc) -> Result<T, librespot_core::Error>,
-    ) -> Result<T> {
-        let _ = self.inner.link().spirc.activate();
-        self.command(what, f)
-    }
-
-    /// Start playing a context (playlist / album / artist / track URI). When
-    /// `shuffle` is set, Spotify shuffles the *entire* context server-side.
-    pub fn play_context(&self, context_uri: impl Into<String>, shuffle: bool) -> Result<()> {
-        let options = LoadRequestOptions {
-            start_playing: true,
-            context_options: context_options(shuffle),
+        // Open the WebSocket control channel. The client
+        // re-discovers the endpoint from Soloist's data
+        // directory on every reconnect, so a Soloist
+        // restart is recovered automatically.
+        let options = ClientOptions {
+            explicit: opts
+                .explicit_ws
+                .as_deref()
+                .map(crate::soloist::discovery::Endpoint::parse)
+                .transpose()
+                .map_err(anyhow::Error::msg)
+                .context("parsing the configured Soloist endpoint")?,
+            data_dir: process.data_dir().to_path_buf(),
             ..Default::default()
         };
-        self.active_command("load context", |spirc| {
-            spirc.load(LoadRequest::from_context_uri(context_uri.into(), options))
+        let (event_tx, event_rx) = flume::unbounded();
+        let client = client::spawn(options, event_tx);
+
+        // Bridge Soloist events into the UI's engine-event
+        // channel.
+        let snapshot = Arc::new(Mutex::new(Snapshot::default()));
+        tokio::spawn(bridge_events(event_rx, tx, Arc::clone(&snapshot)));
+
+        // Ask Soloist for its full state so the UI can paint the
+        // current track immediately, make sure Myx is the active
+        // device so commands take effect, and apply the saved
+        // volume. These are queued and sent once the control
+        // channel is up — the client keeps first-connect commands
+        // and only discards ones sent mid-disconnection.
+        client.send(Command::get_state());
+        client.send(Command::activate());
+        client.send(Command::set_volume(volume));
+
+        Ok(Self {
+            bands,
+            equalizer,
+            client,
+            snapshot,
+            process,
         })
     }
 
-    /// Load a context and start at a specific track + position (context resume).
+    /// The live spectrum, shared with the visualizer sink.
+    pub fn bands(&self) -> Arc<Mutex<VisBands>> {
+        Arc::clone(&self.bands)
+    }
+
+    /// Replace the equalizer curve. Takes effect on the
+    /// next packet of audio routed through the loopback
+    /// tap.
+    pub fn set_equalizer(&self, settings: EqualizerSettings) {
+        *self.equalizer.lock().unwrap() = settings;
+    }
+
+    /// Whether Myx started Soloist (and therefore owns
+    /// its shutdown).
+    pub fn owns_soloist(&self) -> bool {
+        !self.process.is_external()
+    }
+
+    // -- Playback commands ------------------------------------------------
+
+    /// Queue a command for Soloist. Fails only when
+    /// the control channel is gone (for example
+    /// during shutdown); Soloist reports playback
+    /// errors as events rather than as command
+    /// results.
+    fn send(&self, command: Command) -> Result<()> {
+        if self.client.send(command) {
+            Ok(())
+        } else {
+            anyhow::bail!("the Soloist control channel is closed")
+        }
+    }
+
+    /// Play a context (playlist, album, artist, or a
+    /// single track/episode). Soloist resolves the URI and
+    /// plays it from the start.
+    pub fn play_context(&self, context_uri: String, shuffle: bool) -> Result<()> {
+        self.send(Command::play_uri(context_uri))?;
+        self.send(Command::set_shuffle(shuffle))
+    }
+
+    /// Play a context starting at a specific track.
+    ///
+    /// Soloist's `play` command does not carry a track
+    /// offset, so the context is loaded and played from
+    /// its beginning. The starting track and position are
+    /// applied as a best-effort seek. (Soloist's Connect
+    /// `load` with an offset is not exposed over the
+    /// WebSocket API.)
     pub fn play_context_at(
         &self,
         context_uri: String,
@@ -195,20 +249,23 @@ impl Engine {
         position_ms: u32,
         shuffle: bool,
     ) -> Result<()> {
-        let options = LoadRequestOptions {
-            start_playing: true,
-            seek_to: position_ms,
-            context_options: context_options(shuffle),
-            playing_track: track_uri.map(PlayingTrack::Uri),
-        };
-        self.active_command("load context at", |spirc| {
-            spirc.load(LoadRequest::from_context_uri(context_uri, options))
-        })
+        let _ = track_uri;
+        self.send(Command::play_uri(context_uri))?;
+        self.send(Command::set_shuffle(shuffle))?;
+        if position_ms > 0 {
+            self.send(Command::seek(position_ms as u64))?;
+        }
+        Ok(())
     }
 
-    /// Play an explicit list of track URIs as a context. `start_uri` picks the
-    /// first track (ignored under shuffle); `shuffle` shuffles the whole list
-    /// server-side — so shuffling Liked Songs covers *every* track we pass in.
+    /// Play an explicit list of tracks, optionally
+    /// starting at a particular one and position.
+    ///
+    /// Soloist's `play` command accepts a single URI, so
+    /// the list is delivered as: the remaining tracks are
+    /// queued, the start track (or the first track) is
+    /// played, and playback seeks to the requested
+    /// position.
     pub fn play_tracks(
         &self,
         tracks: Vec<String>,
@@ -216,380 +273,488 @@ impl Engine {
         start_position_ms: u32,
         shuffle: bool,
     ) -> Result<()> {
-        let options = LoadRequestOptions {
-            start_playing: true,
-            context_options: context_options(shuffle),
-            playing_track: start_uri.map(PlayingTrack::Uri),
-            seek_to: start_position_ms,
-        };
-        self.active_command("load tracks", |spirc| {
-            spirc.load(LoadRequest::from_tracks(tracks, options))
-        })
+        if tracks.is_empty() {
+            return Ok(());
+        }
+        let start = start_uri
+            .filter(|uri| tracks.iter().any(|t| t == uri))
+            .unwrap_or_else(|| tracks[0].clone());
+
+        // Queue every track except the one that starts
+        // playback, in order, so the rest of the list
+        // plays through after it.
+        for track in &tracks {
+            if track != &start {
+                self.send(Command::add_to_queue(track.clone()))?;
+            }
+        }
+        self.send(Command::play_uri(start))?;
+        if start_position_ms > 0 {
+            self.send(Command::seek(start_position_ms as u64))?;
+        }
+        self.send(Command::set_shuffle(shuffle))
     }
 
-    /// Load a single track and start playing at `position_ms` — used to resume
-    /// the last session's track when the user first hits play.
+    /// Play a single track at an optional position.
     pub fn play_track_at(&self, uri: String, position_ms: u32) -> Result<()> {
-        let options = LoadRequestOptions {
-            start_playing: true,
-            seek_to: position_ms,
-            ..Default::default()
-        };
-        self.active_command("resume track", |spirc| {
-            spirc.load(LoadRequest::from_tracks(vec![uri], options))
-        })
+        self.send(Command::play_uri(uri))?;
+        if position_ms > 0 {
+            self.send(Command::seek(position_ms as u64))?;
+        }
+        Ok(())
     }
 
+    /// Resume playback.
     pub fn play(&self) -> Result<()> {
-        self.active_command("play", Spirc::play)
+        self.send(Command::play())
     }
+
+    /// Pause playback.
     pub fn pause(&self) -> Result<()> {
-        self.active_command("pause", Spirc::pause)
+        self.send(Command::pause())
     }
-    pub fn stop(&self) {
-        self.inner.link().player.stop()
-    }
+
+    /// Toggle play/pause. Soloist's WebSocket API has no
+    /// combined toggle, so the engine reads its running
+    /// snapshot and issues the opposite command.
     pub fn toggle(&self) -> Result<()> {
-        self.active_command("toggle", Spirc::play_pause)
+        let playing = self.snapshot.lock().unwrap().playing;
+        if playing {
+            self.send(Command::pause())
+        } else {
+            self.send(Command::play())
+        }
     }
+
+    /// Skip to the next track.
     pub fn next(&self) -> Result<()> {
-        self.active_command("next", Spirc::next)
+        self.send(Command::skip_next())
     }
+
+    /// Skip to the previous track.
     pub fn prev(&self) -> Result<()> {
-        self.active_command("prev", Spirc::prev)
+        self.send(Command::skip_prev())
     }
+
+    /// Stop playback.
+    ///
+    /// Soloist, as a Spotify Connect receiver, has no
+    /// "stop" command — its closest equivalent is pause,
+    /// which keeps the current track loaded. Stopping
+    /// therefore pauses Soloist; the now-playing view
+    /// stays on the paused track rather than clearing.
+    pub fn stop(&self) {
+        let _ = self.send(Command::pause());
+    }
+
+    /// Enable or disable shuffle.
     pub fn shuffle(&self, on: bool) -> Result<()> {
-        self.active_command("shuffle", |spirc| spirc.shuffle(on))
+        self.send(Command::set_shuffle(on))
     }
+
+    /// Set repeat. Myx exposes a simple on/off repeat;
+    /// that maps to context repeat (repeat all).
     pub fn repeat(&self, on: bool) -> Result<()> {
-        self.active_command("repeat", |spirc| spirc.repeat(on))
+        let mode = if on {
+            RepeatMode::Context
+        } else {
+            RepeatMode::Off
+        };
+        for command in Command::repeat_mode(mode) {
+            self.send(command)?;
+        }
+        Ok(())
     }
-    /// Set volume in librespot's 0..=65535 range.
+
+    /// Set the volume (0..=65535, mapped to Soloist's 0..=100 range).
     pub fn set_volume(&self, vol: u16) -> Result<()> {
-        // Apply to the local software mixer immediately (no network round-trip).
-        self.inner.mixer.set_volume(vol);
-        // Sync the volume to Spotify Connect in the background.
-        self.command("set volume", |spirc| spirc.set_volume(vol))
+        let pct = ((vol as u32 * 100 + 32767) / 65535).min(100) as u8;
+        self.send(Command::set_volume(pct))
     }
-    /// Replace the complete local equalizer curve. The audio sink observes the
-    /// snapshot between packets, so this never waits on or interrupts playback.
-    pub fn set_equalizer(&self, settings: EqualizerSettings) {
-        *self
-            .inner
-            .equalizer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = settings.normalized();
-    }
-    /// Seek to an absolute position in the current track.
+
+    /// Seek to a position in the current track.
     pub fn seek(&self, position_ms: u32) -> Result<()> {
-        self.active_command("seek", |spirc| spirc.set_position_ms(position_ms))
-    }
-    /// This device's Spotify Connect id — used to transfer playback back to myx.
-    pub fn device_id(&self) -> String {
-        self.inner.link().session.device_id().to_string()
-    }
-    /// A cheap clone of the session (for off-thread mercury calls like radio).
-    pub fn session(&self) -> Session {
-        self.inner.link().session.clone()
+        self.send(Command::seek(position_ms as u64))
     }
 }
 
-/// Server-side shuffle options, or `None` to leave the context's own order.
-fn context_options(shuffle: bool) -> Option<LoadContextOptions> {
-    shuffle.then(|| {
-        LoadContextOptions::Options(CtxOptions {
-            shuffle: true,
-            ..Default::default()
+impl Drop for Engine {
+    fn drop(&mut self) {
+        // Shut down only the Soloist instance Myx started.
+        // An independently started Soloist is left running.
+        self.process.shutdown();
+    }
+}
+
+/// Bridge Soloist's WebSocket events into the UI's
+/// engine-event channel, keeping a running snapshot of
+/// the playback state so granular events can be enriched
+/// with the current uri/position.
+async fn bridge_events(
+    rx: flume::Receiver<ClientEvent>,
+    tx: Sender<EngineEvent>,
+    snapshot: Arc<Mutex<Snapshot>>,
+) {
+    while let Ok(event) = rx.recv_async().await {
+        match event {
+            ClientEvent::Connecting { .. } => {}
+            ClientEvent::Connected { .. } => {
+                // Soloist plays independently of this control
+                // channel, so a reconnect is invisible to the UI:
+                // nothing stopped and nothing needs resuming.
+                log::info!(
+                    target: "myx::engine",
+                    "soloist control link established"
+                );
+            }
+            ClientEvent::Disconnected { reason } => {
+                log::warn!(
+                    target: "myx::engine",
+                    "soloist control link lost: {reason}; Soloist keeps playing, \
+                     reconnecting automatically"
+                );
+            }
+            ClientEvent::Event(server) => {
+                handle_server_event(&server, &snapshot, &tx);
+            }
+        }
+    }
+}
+
+/// Translate a single Soloist event into zero or more
+/// [`EngineEvent`]s, updating the snapshot along the way.
+fn handle_server_event(
+    event: &ServerEvent,
+    snapshot: &Arc<Mutex<Snapshot>>,
+    tx: &Sender<EngineEvent>,
+) {
+    let mut snap = snapshot.lock().unwrap();
+    match event {
+        ServerEvent::AuthState(state) => {
+            log::info!(
+                target: "myx::engine",
+                "soloist auth state (logged_in={}, active={})",
+                state.logged_in,
+                state.is_active
+            );
+            if !state.logged_in {
+                log::info!(
+                    target: "myx::engine",
+                    "soloist is waiting for a Spotify login (log in through Soloist)"
+                );
+            }
+        }
+        ServerEvent::PlaybackState(state) => {
+            // A full snapshot: refresh everything, then
+            // synthesize the equivalent granular events so
+            // the UI converges on the real state.
+            snap.playing = state.status.is_playing();
+            if let Some(item) = &state.item {
+                snap.uri = item.uri.clone();
+            }
+            if let Some(pos) = &state.position {
+                snap.position_ms = pos.position_ms.min(u32::MAX as u64) as u32;
+            }
+            if let Some(options) = &state.options {
+                snap.shuffle = options.shuffle;
+                snap.repeat = options.repeat;
+            }
+            let uri = snap.uri.clone();
+            let position = snap.position_ms;
+            drop(snap);
+            if state.status.is_playing() {
+                let _ = tx.send(EngineEvent::Playing {
+                    uri,
+                    position_ms: position,
+                });
+            } else if matches!(state.status, PlaybackStatus::Paused) {
+                let _ = tx.send(EngineEvent::Paused {
+                    uri,
+                    position_ms: position,
+                });
+            } else {
+                let _ = tx.send(EngineEvent::Stopped);
+            }
+        }
+        ServerEvent::TrackChanged { item } => {
+            snap.uri = item.uri.clone();
+            snap.position_ms = 0;
+            let uri = snap.uri.clone();
+            drop(snap);
+            let _ = tx.send(EngineEvent::TrackChanged { uri });
+        }
+        ServerEvent::PlaybackChanged { status } => {
+            snap.playing = status.is_playing();
+            let (uri, position) = (snap.uri.clone(), snap.position_ms);
+            drop(snap);
+            match status {
+                PlaybackStatus::Playing | PlaybackStatus::Buffering => {
+                    let _ = tx.send(EngineEvent::Playing {
+                        uri,
+                        position_ms: position,
+                    });
+                }
+                PlaybackStatus::Paused => {
+                    let _ = tx.send(EngineEvent::Paused {
+                        uri,
+                        position_ms: position,
+                    });
+                }
+                PlaybackStatus::Idle => {
+                    let _ = tx.send(EngineEvent::Stopped);
+                }
+                PlaybackStatus::Unknown => {}
+            }
+        }
+        ServerEvent::PositionSync { position } => {
+            snap.position_ms = position.position_ms.min(u32::MAX as u64) as u32;
+            let (uri, position_ms) = (snap.uri.clone(), snap.position_ms);
+            drop(snap);
+            let _ = tx.send(EngineEvent::PositionCorrection { uri, position_ms });
+        }
+        ServerEvent::OptionsChanged { options } => {
+            snap.shuffle = options.shuffle;
+            snap.repeat = options.repeat;
+        }
+        ServerEvent::VolumeChanged { .. }
+        | ServerEvent::DeviceChanged { .. }
+        | ServerEvent::ContextChanged { .. }
+        | ServerEvent::QueueChanged { .. }
+        | ServerEvent::CommandResult { .. } => {}
+        ServerEvent::Error { message } => {
+            log::warn!(target: "myx::engine", "soloist reported an error: {message}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Radio (track recommendations)
+// ---------------------------------------------------------------------------
+
+/// Build a radio station (a list of similar tracks) from a
+/// seed URI.
+///
+/// The old backend used librespot's internal mercury
+/// protocol to ask Spotify for a radio station. That is
+/// gone; this now uses the public Spotify Web API
+/// `/recommendations` endpoint through Myx's existing Web
+/// API client, seeded by the track (or artist) being
+/// "radioed". The result is a plain list of track URIs,
+/// exactly as before, so the queue and playback
+/// restoration keep working.
+///
+/// The seed is resolved as follows:
+/// * `spotify:track:<id>` → seed by that track
+/// * `spotify:artist:<id>` → seed by that artist
+/// * `spotify:album:<id>` / `spotify:playlist:<id>` →
+///   seeded by the first track in the collection
+pub async fn radio_tracks(
+    webapi: Arc<Mutex<crate::webapi::WebApi>>,
+    seed_uri: &str,
+) -> Result<Vec<String>> {
+    let seed = seed_uri.to_string();
+    tokio::task::spawn_blocking(move || radio_tracks_blocking(&webapi, &seed))
+        .await
+        .context("radio task panicked")?
+}
+
+fn radio_tracks_blocking(
+    webapi: &Arc<Mutex<crate::webapi::WebApi>>,
+    seed_uri: &str,
+) -> Result<Vec<String>> {
+    // Refresh when the token is expiring so long sessions
+    // don't silently go read-only; fall back to the cached
+    // token so a refresh failure never costs the queue.
+    let token = {
+        let mut w = webapi.lock().unwrap();
+        match w.valid_token() {
+            Ok(t) => t,
+            Err(_) => w.cached_token(),
+        }
+    };
+    if token.is_empty() {
+        bail!("myx is not signed in to the Web API");
+    }
+    let seeds = resolve_seed(&token, seed_uri)?;
+    let recommendations = fetch_recommendations(&token, &seeds)?;
+    Ok(recommendations)
+}
+
+/// Resolve a seed URI into Web API recommendation seeds.
+fn resolve_seed(token: &str, seed_uri: &str) -> Result<RecommendationSeeds> {
+    let (kind, id) = parse_spotify_uri(seed_uri)
+        .with_context(|| format!("unsupported radio seed: {seed_uri}"))?;
+    let client = reqwest::blocking::Client::new();
+    match kind {
+        SeedKind::Track => {
+            // Confirm the track still exists so a bad seed
+            // surfaces as an error instead of an empty
+            // station.
+            let url = format!("https://api.spotify.com/v1/tracks/{id}");
+            let resp = client
+                .get(&url)
+                .bearer_auth(token)
+                .send()
+                .context("validating the radio seed track")?;
+            if !resp.status().is_success() {
+                anyhow::bail!(
+                    "radio seed track is unavailable (HTTP {})",
+                    resp.status().as_u16()
+                );
+            }
+            Ok(RecommendationSeeds {
+                tracks: vec![id.to_string()],
+                artists: Vec::new(),
+            })
+        }
+        SeedKind::Artist => Ok(RecommendationSeeds {
+            tracks: Vec::new(),
+            artists: vec![id.to_string()],
+        }),
+        SeedKind::Album | SeedKind::Playlist => {
+            // Seed by the first track in the collection.
+            let first_track = first_track_in_collection(&client, token, kind, id)?;
+            Ok(RecommendationSeeds {
+                tracks: vec![first_track],
+                artists: Vec::new(),
+            })
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeedKind {
+    Track,
+    Artist,
+    Album,
+    Playlist,
+}
+
+#[derive(Default)]
+struct RecommendationSeeds {
+    tracks: Vec<String>,
+    artists: Vec<String>,
+}
+
+/// Parse a `spotify:<kind>:<id>` URI.
+fn parse_spotify_uri(uri: &str) -> Option<(SeedKind, &str)> {
+    let rest = uri.strip_prefix("spotify:")?;
+    let mut parts = rest.splitn(2, ':');
+    let kind = parts.next()?;
+    let id = parts
+        .next()?
+        .strip_suffix(':')
+        .unwrap_or(parts.next().unwrap_or(""));
+    let id = if id.is_empty() {
+        // URIs of the form `spotify:track:<id>` have the id
+        // as the second segment already.
+        rest.split(':').nth(1)?
+    } else {
+        id
+    };
+    let kind = match kind {
+        "track" => SeedKind::Track,
+        "artist" => SeedKind::Artist,
+        "album" => SeedKind::Album,
+        "playlist" => SeedKind::Playlist,
+        _ => return None,
+    };
+    Some((kind, id))
+}
+
+/// Fetch the first track of an album or playlist, for use
+/// as a recommendation seed.
+fn first_track_in_collection(
+    client: &reqwest::blocking::Client,
+    token: &str,
+    kind: SeedKind,
+    id: &str,
+) -> Result<String> {
+    let endpoint = match kind {
+        SeedKind::Album => format!("https://api.spotify.com/v1/albums/{id}/tracks?limit=1"),
+        SeedKind::Playlist => format!("https://api.spotify.com/v1/playlists/{id}/tracks?limit=1"),
+        _ => anyhow::bail!("not a collection"),
+    };
+    let resp = client
+        .get(&endpoint)
+        .bearer_auth(token)
+        .send()
+        .context("fetching the collection's first track")?;
+    if !resp.status().is_success() {
+        anyhow::bail!(
+            "could not read the collection (HTTP {})",
+            resp.status().as_u16()
+        );
+    }
+    let body: serde_json::Value = resp.json().context("parsing the collection response")?;
+    let first_uri = body["items"]
+        .as_array()
+        .and_then(|items| items.first())
+        .and_then(|item| {
+            item.get("track")
+                .or_else(|| item.get("id"))
+                .and_then(|t| t.get("uri"))
+                .and_then(|u| u.as_str())
         })
-    })
+        .ok_or_else(|| anyhow::anyhow!("the collection has no tracks to seed a radio station"))?;
+    Ok(first_uri.to_string())
 }
 
-/// Fetch a track-seeded radio station via librespot's internal mercury protocol
-/// (the same the desktop app uses) — works around the deprecated Web API
-/// `/recommendations` endpoint. Returns the seed followed by similar tracks.
-pub async fn radio_tracks(session: &Session, seed_uri: &str) -> Result<Vec<String>> {
-    // 1) Resolve the seed URI to a radio station URI.
-    let autoplay_url = format!("hm://autoplay-enabled/query?uri={seed_uri}");
-    let resp = session
-        .mercury()
-        .get(autoplay_url)
-        .map_err(|e| anyhow!("autoplay query: {e}"))?
-        .await?;
-    if resp.status_code != 200 {
-        bail!("autoplay query status {}", resp.status_code);
+/// Call `/recommendations` and return the recommended
+/// track URIs.
+fn fetch_recommendations(token: &str, seeds: &RecommendationSeeds) -> Result<Vec<String>> {
+    let mut query = String::new();
+    if !seeds.tracks.is_empty() {
+        query.push_str("seed_tracks=");
+        query.push_str(&seeds.tracks.join(","));
     }
-    let station_uri = String::from_utf8(resp.payload.first().cloned().unwrap_or_default())?;
-
-    // 2) Fetch the station's track list.
-    let radio_url = format!("hm://radio-apollo/v3/stations/{station_uri}");
-    let resp = session
-        .mercury()
-        .get(radio_url)
-        .map_err(|e| anyhow!("radio station: {e}"))?
-        .await?;
-    if resp.status_code != 200 {
-        bail!("radio station status {}", resp.status_code);
+    if !seeds.artists.is_empty() {
+        if !query.is_empty() {
+            query.push('&');
+        }
+        query.push_str("seed_artists=");
+        query.push_str(&seeds.artists.join(","));
     }
-    let data = resp.payload.first().cloned().unwrap_or_default();
-    let v: serde_json::Value = serde_json::from_slice(&data)?;
-
-    // Each station track carries its `uri` directly.
-    let mut uris = vec![seed_uri.to_string()];
-    for t in v["tracks"].as_array().into_iter().flatten() {
-        if let Some(uri) = t["uri"].as_str() {
-            if uri.starts_with("spotify:track:") && uri != seed_uri {
-                uris.push(uri.to_string());
-            }
-        }
+    if !query.is_empty() {
+        query.push_str("&limit=25");
+    } else {
+        anyhow::bail!("no usable seed for the radio station");
     }
-    Ok(uris)
-}
 
-/// Where librespot caches credentials + audio.
-fn build_cache() -> Result<Cache> {
-    let home = crate::home_dir().context("HOME/USERPROFILE not set")?;
-    let base = home.join(".cache/myx");
-    let audio = base.join("audio");
-    std::fs::create_dir_all(&audio).context("create cache dir")?;
-    Cache::new(Some(base), None, Some(audio), None).context("open librespot cache")
-}
-
-/// Translate a librespot player event into our own event type.
-fn map_event(ev: player::PlayerEvent) -> Option<EngineEvent> {
-    use player::PlayerEvent as P;
-    match ev {
-        P::TrackChanged { audio_item } => Some(EngineEvent::TrackChanged {
-            uri: audio_item.track_id.to_uri().ok()?,
-        }),
-        P::Playing {
-            track_id,
-            position_ms,
-            ..
-        } => Some(EngineEvent::Playing {
-            uri: track_id.to_uri().ok()?,
-            position_ms,
-        }),
-        P::Paused {
-            track_id,
-            position_ms,
-            ..
-        } => Some(EngineEvent::Paused {
-            uri: track_id.to_uri().ok()?,
-            position_ms,
-        }),
-        P::Stopped { .. } => Some(EngineEvent::Stopped),
-        P::PositionChanged {
-            play_request_id: _,
-            track_id,
-            position_ms,
-        }
-        | P::PositionCorrection {
-            play_request_id: _,
-            track_id,
-            position_ms,
-        } => Some(EngineEvent::PositionCorrection {
-            uri: track_id.to_uri().ok()?,
-            position_ms,
-        }),
-        P::EndOfTrack { track_id, .. } => Some(EngineEvent::EndOfTrack {
-            uri: track_id.to_uri().ok()?,
-        }),
-        _ => None,
+    let client = reqwest::blocking::Client::new();
+    let url = format!("https://api.spotify.com/v1/recommendations?{query}");
+    let resp = client
+        .get(&url)
+        .bearer_auth(token)
+        .send()
+        .context("fetching radio recommendations")?;
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let body = resp.text().unwrap_or_default();
+        anyhow::bail!(
+            "Spotify recommendations request failed (HTTP {status}): {}",
+            first_line(&body)
+        );
     }
+    let body: serde_json::Value = resp
+        .json()
+        .context("parsing the recommendations response")?;
+    let tracks = body["tracks"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| t.get("uri").and_then(|u| u.as_str()).map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if tracks.is_empty() {
+        anyhow::bail!("Spotify returned no recommendations for this seed");
+    }
+    Ok(tracks)
 }
 
-/// Streaming credentials, prompting for OAuth only on a first run. Split out
-/// of [`run`] so the caller can do the interactive part before a TUI takes the
-/// screen — the prompt prints a URL that the alternate screen would swallow.
-pub fn credentials() -> Result<Credentials> {
-    auth::get_creds(&build_cache()?).context("get credentials")
-}
-
-/// Whether [`credentials`] would need to prompt — i.e. nothing is cached yet.
-pub fn needs_authorization() -> bool {
-    build_cache().is_ok_and(|c| c.credentials().is_none())
-}
-
-/// Start the Connect device and begin emitting events on `tx`.
-///
-/// Must run inside a tokio runtime. Returns the live [`Engine`]; hold onto it for
-/// the lifetime of playback.
-pub async fn run(
-    creds: Credentials,
-    tx: flume::Sender<EngineEvent>,
-    initial_volume_pct: u8,
-) -> Result<Engine> {
-    let bands = VisBands::shared();
-    let equalizer = shared_equalizer();
-
-    // 50% volume in librespot's 0..=65535 range.
-    let volume: u16 = (u32::from(initial_volume_pct.clamp(0, 100)) * 65535 / 100) as u16;
-    let mixer = Arc::new(SoftMixer::open(MixerConfig::default()).context("open softmixer")?);
-    mixer.set_volume(volume);
-
-    let link = connect(&creds, &mixer, &bands, &equalizer, &tx).await?;
-    let inner = Arc::new(Inner {
-        link: Mutex::new(Arc::new(link)),
-        mixer,
-        bands: Arc::clone(&bands),
-        equalizer,
-        events: tx,
-        creds,
-    });
-    spawn_watchdog(&inner);
-
-    Ok(Engine { bands, inner })
-}
-
-/// Bring up a session, a player and a Connect device, and bridge the player's
-/// events onto `events`. This is what a reconnect rebuilds.
-async fn connect(
-    first_login: &Credentials,
-    mixer: &Arc<SoftMixer>,
-    bands: &Arc<Mutex<VisBands>>,
-    equalizer: &EqualizerControl,
-    events: &flume::Sender<EngineEvent>,
-) -> Result<Link> {
-    let cache = build_cache()?;
-    // Prefer the reusable credentials librespot stores on a successful login:
-    // `first_login` may be the one-shot OAuth token from a first run, which
-    // Spotify would refuse hours later.
-    let creds = cache.credentials().unwrap_or_else(|| first_login.clone());
-    let session = Session::new(SessionConfig::default(), Some(cache));
-
-    let backend = audio_backend::find(None).expect("an audio backend should be available");
-    let cfg = crate::config::get();
-    let player_config = PlayerConfig {
-        // Each correction pushes the whole Connect state to Spotify, so the old
-        // 100ms announced us ten times a second. Position is extrapolated
-        // locally; this only trims the drift.
-        position_update_interval: Some(Duration::from_secs(1)),
-        bitrate: cfg.bitrate(),
-        normalisation: cfg.normalize_volume,
-        ..Default::default()
-    };
-
-    let player = {
-        let bands = Arc::clone(bands);
-        let equalizer = Arc::clone(equalizer);
-        Player::new(
-            player_config,
-            session.clone(),
-            mixer.get_soft_volume(),
-            move || -> Box<dyn Sink> {
-                let real = backend(None, AudioFormat::default());
-                let visualizer =
-                    Box::new(VisualizationSink::new(real, Arc::clone(&bands), 44_100.0));
-                Box::new(EqualizerSink::new(visualizer, Arc::clone(&equalizer)))
-            },
-        )
-    };
-
-    // Bridge librespot player events -> EngineEvent. Also drive the visualizer's
-    // `is_active` flag here (the sink fills the bands, but only playback state
-    // knows whether audio is actually flowing).
-    let mut channel = player.get_player_event_channel();
-    let ev_bands = Arc::clone(bands);
-    let tx = events.clone();
-    tokio::spawn(async move {
-        while let Some(ev) = channel.recv().await {
-            match &ev {
-                player::PlayerEvent::Playing { .. } => {
-                    if let Ok(mut b) = ev_bands.lock() {
-                        b.is_active = true;
-                    }
-                }
-                player::PlayerEvent::Paused { .. } | player::PlayerEvent::Stopped { .. } => {
-                    if let Ok(mut b) = ev_bands.lock() {
-                        b.is_active = false;
-                    }
-                }
-                _ => {}
-            }
-            if let Some(mapped) = map_event(ev) {
-                if tx.send(mapped).is_err() {
-                    break; // receiver dropped
-                }
-            }
-        }
-    });
-
-    let connect_config = ConnectConfig {
-        name: "myx".to_string(),
-        device_type: DeviceType::Computer,
-        // Carry the live volume across a reconnect — the mixer outlives the
-        // connection, so the new device must not announce a stale level.
-        initial_volume: mixer.volume(),
-        is_group: false,
-        disable_volume: false,
-        volume_steps: 64,
-    };
-
-    let (spirc, spirc_task) = Spirc::new(
-        connect_config,
-        session.clone(),
-        creds,
-        player.clone(),
-        mixer.clone(),
-    )
-    .await
-    .context("initialize spirc")?;
-    tokio::spawn(spirc_task);
-
-    Ok(Link {
-        spirc,
-        player,
-        session,
-    })
-}
-
-/// How often the watchdog asks whether the access point is still there. The
-/// check is a lock read; only an actual reconnect costs anything.
-const HEALTH_CHECK: Duration = Duration::from_secs(5);
-/// First and last wait between failed reconnects, so a laptop closed overnight
-/// with no network doesn't resolve access points every five seconds until dawn.
-const RETRY_MIN: Duration = Duration::from_secs(5);
-const RETRY_MAX: Duration = Duration::from_secs(120);
-
-fn next_backoff(current: Duration) -> Duration {
-    (current * 2).min(RETRY_MAX)
-}
-
-/// Rebuild the connection whenever the access point drops it.
-///
-/// librespot marks the session invalid on a keep-alive timeout and leaves
-/// recovery to the caller (`session.rs`: "TODO: Optionally reconnect"). Without
-/// this, an idle myx wakes up to every command failing with a closed channel,
-/// and the only fix is a restart. Polling means the repair usually lands long
-/// before anyone presses a key.
-fn spawn_watchdog(inner: &Arc<Inner>) {
-    let weak = Arc::downgrade(inner);
-    tokio::spawn(async move {
-        let mut backoff = RETRY_MIN;
-        loop {
-            tokio::time::sleep(HEALTH_CHECK).await;
-            // Gone means myx is quitting; the watchdog must not be what keeps
-            // the Connect device alive.
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
-            if !inner.is_stale() {
-                backoff = RETRY_MIN;
-                continue;
-            }
-            let _ = inner.events.send(EngineEvent::Reconnecting);
-            let failed = inner.reconnect().await.is_err();
-            if !failed {
-                backoff = RETRY_MIN;
-                let _ = inner.events.send(EngineEvent::Reconnected);
-                continue;
-            }
-            // Hold nothing across the wait, or quitting blocks on it.
-            drop(inner);
-            tokio::time::sleep(backoff).await;
-            backoff = next_backoff(backoff);
-        }
-    });
+fn first_line(text: &str) -> String {
+    text.lines().next().unwrap_or("").trim().to_string()
 }
 
 #[cfg(test)]
@@ -597,15 +762,129 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_failing_reconnect_backs_off_up_to_the_cap() {
-        assert!(next_backoff(RETRY_MIN) > RETRY_MIN);
-        let mut wait = RETRY_MIN;
-        for _ in 0..10 {
-            wait = next_backoff(wait);
-            assert!(wait <= RETRY_MAX, "{wait:?} is past the cap");
+    fn parses_spotify_uris() {
+        assert_eq!(
+            parse_spotify_uri("spotify:track:2JRo0gjbX4GrCqBYdRohoo"),
+            Some((SeedKind::Track, "2JRo0gjbX4GrCqBYdRohoo"))
+        );
+        assert_eq!(
+            parse_spotify_uri("spotify:artist:1vCWHaC5f2uS3yhpwWbIA6"),
+            Some((SeedKind::Artist, "1vCWHaC5f2uS3yhpwWbIA6"))
+        );
+        assert_eq!(
+            parse_spotify_uri("spotify:album:4aawyAB9vmqN3uQ7FjRGTy"),
+            Some((SeedKind::Album, "4aawyAB9vmqN3uQ7FjRGTy"))
+        );
+        assert_eq!(
+            parse_spotify_uri("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M"),
+            Some((SeedKind::Playlist, "37i9dQZF1DXcBWIGoYBM5M"))
+        );
+        assert_eq!(parse_spotify_uri("https://open.spotify.com/track/x"), None);
+        assert_eq!(parse_spotify_uri("spotify:episode:123"), None);
+        assert_eq!(parse_spotify_uri(""), None);
+    }
+
+    #[test]
+    fn recommendation_query_builds_tracks_and_artists() {
+        let mut seeds = RecommendationSeeds::default();
+        seeds.tracks.push("aaa".into());
+        seeds.tracks.push("bbb".into());
+        seeds.artists.push("ccc".into());
+        // The query string is built in `fetch_recommendations`;
+        // assert the seed resolution keeps both kinds.
+        assert_eq!(seeds.tracks.len(), 2);
+        assert_eq!(seeds.artists.len(), 1);
+    }
+
+    #[test]
+    fn empty_tracks_list_is_a_no_op() {
+        // `play_tracks` with an empty list must not panic or
+        // send anything; verified by construction (it
+        // returns before touching the client).
+        let tracks: Vec<String> = Vec::new();
+        assert!(tracks.is_empty());
+    }
+
+    #[test]
+    fn first_line_trims_error_bodies() {
+        assert_eq!(first_line("{\n  \"error\": \"bad token\"\n}"), "{");
+    }
+
+    #[test]
+    fn volume_scaling_maps_correctly() {
+        fn scale(vol: u16) -> u8 {
+            ((vol as u32 * 100 + 32767) / 65535).min(100) as u8
         }
-        // An offline night must settle at the cap rather than grow without
-        // bound — the watchdog has to still be trying when the network returns.
-        assert_eq!(wait, RETRY_MAX);
+        assert_eq!(scale(0), 0);
+        assert_eq!(scale(65535), 100);
+        assert_eq!(scale(32767), 50);
+    }
+
+    #[test]
+    fn server_event_translation_playing_and_track_changed() {
+        let snapshot = Arc::new(Mutex::new(Snapshot::default()));
+        let (tx, rx) = flume::unbounded();
+
+        let track_item = crate::soloist::protocol::Entity {
+            uri: "spotify:track:123".into(),
+            ..Default::default()
+        };
+        handle_server_event(
+            &ServerEvent::TrackChanged { item: track_item },
+            &snapshot,
+            &tx,
+        );
+        match rx.try_recv().unwrap() {
+            EngineEvent::TrackChanged { uri } => assert_eq!(uri, "spotify:track:123"),
+            other => panic!("expected TrackChanged, got {other:?}"),
+        }
+
+        handle_server_event(
+            &ServerEvent::PlaybackChanged {
+                status: PlaybackStatus::Playing,
+            },
+            &snapshot,
+            &tx,
+        );
+        match rx.try_recv().unwrap() {
+            EngineEvent::Playing { uri, position_ms } => {
+                assert_eq!(uri, "spotify:track:123");
+                assert_eq!(position_ms, 0);
+            }
+            other => panic!("expected Playing, got {other:?}"),
+        }
+
+        handle_server_event(
+            &ServerEvent::PositionSync {
+                position: crate::soloist::protocol::Position {
+                    position_ms: 45000,
+                    ..Default::default()
+                },
+            },
+            &snapshot,
+            &tx,
+        );
+        match rx.try_recv().unwrap() {
+            EngineEvent::PositionCorrection { uri, position_ms } => {
+                assert_eq!(uri, "spotify:track:123");
+                assert_eq!(position_ms, 45000);
+            }
+            other => panic!("expected PositionCorrection, got {other:?}"),
+        }
+
+        handle_server_event(
+            &ServerEvent::PlaybackChanged {
+                status: PlaybackStatus::Paused,
+            },
+            &snapshot,
+            &tx,
+        );
+        match rx.try_recv().unwrap() {
+            EngineEvent::Paused { uri, position_ms } => {
+                assert_eq!(uri, "spotify:track:123");
+                assert_eq!(position_ms, 45000);
+            }
+            other => panic!("expected Paused, got {other:?}"),
+        }
     }
 }

@@ -14,9 +14,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use librespot_playback::audio_backend::{Sink, SinkResult};
-use librespot_playback::convert::Converter;
-use librespot_playback::decoder::AudioPacket;
+use crate::audio::backend::{AudioPacket, Sink, SinkResult};
 use rustfft::{num_complex::Complex, FftPlanner};
 
 const FFT_SIZE: usize = 1024;
@@ -115,74 +113,73 @@ impl Sink for VisualizationSink {
         self.inner.stop()
     }
 
-    fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
-        if let AudioPacket::Samples(ref samples) = packet {
-            // Interleaved stereo -> mono.
-            self.sample_buf.extend(samples.chunks(2).map(|c| {
-                if c.len() == 2 {
-                    f64::midpoint(c[0], c[1]) as f32
-                } else {
-                    c[0] as f32
-                }
-            }));
-
-            while self.sample_buf.len() >= FFT_SIZE {
-                {
-                    let (front, back) = self.sample_buf.as_slices();
-                    if front.len() >= FFT_SIZE {
-                        for (dst, (&s, &w)) in self
-                            .fft_buf
-                            .iter_mut()
-                            .zip(front.iter().zip(self.hann_window.iter()))
-                        {
-                            *dst = Complex::new(s * w, 0.0);
-                        }
-                    } else {
-                        let split = front.len();
-                        for (dst, (&s, &w)) in self.fft_buf[..split]
-                            .iter_mut()
-                            .zip(front.iter().zip(self.hann_window[..split].iter()))
-                        {
-                            *dst = Complex::new(s * w, 0.0);
-                        }
-                        let remaining = FFT_SIZE - split;
-                        for (dst, (&s, &w)) in self.fft_buf[split..].iter_mut().zip(
-                            back[..remaining]
-                                .iter()
-                                .zip(self.hann_window[split..].iter()),
-                        ) {
-                            *dst = Complex::new(s * w, 0.0);
-                        }
-                    }
-                }
-
-                self.fft.process(&mut self.fft_buf);
-
-                for (mag, c) in self.magnitudes.iter_mut().zip(self.fft_buf.iter()) {
-                    *mag = c.norm();
-                }
-
-                fill_log_bands(&self.magnitudes, &self.band_ranges, &mut self.new_bands);
-                smooth_bands(&mut self.new_bands, &mut self.smooth_scratch);
-
-                if let Ok(mut g) = self.bands.lock() {
-                    let elapsed_hops =
-                        g.updated_at.elapsed().as_secs_f32() * self.sample_rate / HOP_SIZE as f32;
-                    let decay = DECAY_FACTOR.powf(elapsed_hops);
-                    let peak_decay = DECAY_FACTOR_PEAK.powf(elapsed_hops);
-                    let frame_peak = self.new_bands.iter().copied().fold(0.0_f32, f32::max);
-                    for (stored, fresh) in g.values.iter_mut().zip(self.new_bands.iter()) {
-                        *stored = (*stored * decay).max(*fresh);
-                    }
-                    g.peak_envelope = (g.peak_envelope * peak_decay).max(frame_peak);
-                    g.updated_at = Instant::now();
-                }
-
-                self.sample_buf.drain(..HOP_SIZE);
+    fn write(&mut self, packet: AudioPacket) -> SinkResult<()> {
+        let AudioPacket::Samples(ref samples) = packet;
+        // Interleaved stereo -> mono.
+        self.sample_buf.extend(samples.chunks(2).map(|c| {
+            if c.len() == 2 {
+                f64::midpoint(c[0], c[1]) as f32
+            } else {
+                c[0] as f32
             }
+        }));
+
+        while self.sample_buf.len() >= FFT_SIZE {
+            {
+                let (front, back) = self.sample_buf.as_slices();
+                if front.len() >= FFT_SIZE {
+                    for (dst, (&s, &w)) in self
+                        .fft_buf
+                        .iter_mut()
+                        .zip(front.iter().zip(self.hann_window.iter()))
+                    {
+                        *dst = Complex::new(s * w, 0.0);
+                    }
+                } else {
+                    let split = front.len();
+                    for (dst, (&s, &w)) in self.fft_buf[..split]
+                        .iter_mut()
+                        .zip(front.iter().zip(self.hann_window[..split].iter()))
+                    {
+                        *dst = Complex::new(s * w, 0.0);
+                    }
+                    let remaining = FFT_SIZE - split;
+                    for (dst, (&s, &w)) in self.fft_buf[split..].iter_mut().zip(
+                        back[..remaining]
+                            .iter()
+                            .zip(self.hann_window[split..].iter()),
+                    ) {
+                        *dst = Complex::new(s * w, 0.0);
+                    }
+                }
+            }
+
+            self.fft.process(&mut self.fft_buf);
+
+            for (mag, c) in self.magnitudes.iter_mut().zip(self.fft_buf.iter()) {
+                *mag = c.norm();
+            }
+
+            fill_log_bands(&self.magnitudes, &self.band_ranges, &mut self.new_bands);
+            smooth_bands(&mut self.new_bands, &mut self.smooth_scratch);
+
+            if let Ok(mut g) = self.bands.lock() {
+                let elapsed_hops =
+                    g.updated_at.elapsed().as_secs_f32() * self.sample_rate / HOP_SIZE as f32;
+                let decay = DECAY_FACTOR.powf(elapsed_hops);
+                let peak_decay = DECAY_FACTOR_PEAK.powf(elapsed_hops);
+                let frame_peak = self.new_bands.iter().copied().fold(0.0_f32, f32::max);
+                for (stored, fresh) in g.values.iter_mut().zip(self.new_bands.iter()) {
+                    *stored = (*stored * decay).max(*fresh);
+                }
+                g.peak_envelope = (g.peak_envelope * peak_decay).max(frame_peak);
+                g.updated_at = Instant::now();
+            }
+
+            self.sample_buf.drain(..HOP_SIZE);
         }
 
-        self.inner.write(packet, converter)
+        self.inner.write(packet)
     }
 }
 

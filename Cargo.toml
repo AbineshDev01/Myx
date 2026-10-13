@@ -21,10 +21,13 @@ image = "0.25"
 color-thief = "0.2"
 
 # --- streaming backend (on by default; the single `myx` binary needs it) ---
-librespot-core = { version = "0.8.0", optional = true }
-librespot-connect = { version = "0.8.0", optional = true }
-librespot-playback = { version = "0.8.0", optional = true, default-features = false, features = ["native-tls", "rodio-backend"] }
-tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+# Playback is handled by Spotify Soloist, an external Connect receiver myx
+# drives over its local WebSocket API. The deps below are myx's own: rodio
+# is the audio output (the sink Soloist's loopback is pumped through so the
+# equalizer and visualizer still see the sound), tokio-tungstenite is the
+# WebSocket client, and libc is the Unix process/signal plumbing for Soloist
+# process management.
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 flume = { version = "0.12", optional = true }
 rustfft = { version = "6", optional = true }
 reqwest = { version = "0.13", optional = true, default-features = false, features = ["blocking", "json", "native-tls"] }
@@ -37,6 +40,12 @@ serde_json = { version = "1", optional = true }
 anyhow = { version = "1", optional = true }
 open = { version = "5", optional = true }
 fs2 = { version = "0.4", optional = true }
+rodio = { version = "0.21", optional = true, default-features = false, features = ["playback"] }
+tokio-tungstenite = { version = "0.28", optional = true, default-features = false, features = ["connect"] }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
+# Unix signals for Soloist process-group shutdown (SIGTERM/SIGKILL) and
+# pid liveness checks.
+libc = { version = "0.2", optional = true }
 souvlaki = { version = "0.8.3", default-features = false, features = ["pollster", "zbus", "zvariant"] }
 toml = { version = "1", default-features = false, features = ["parse", "serde"], optional = true }
 log = { version = "0.4.33", features = ["std"] }
@@ -48,11 +57,6 @@ windows-win = "3.0.0"
 [target.'cfg(target_os = "macos")'.dependencies]
 winit = "0.30.13"
 
-# Pins librespot-core's transitive `vergen` build-dep to a working version so a
-# fresh `cargo install` (which ignores Cargo.lock) resolves correctly.
-[build-dependencies]
-vergen = "=9.0.6"
-
 [features]
 default = ["streaming", "mxc"]
 
@@ -60,9 +64,6 @@ default = ["streaming", "mxc"]
 # streaming backend so consumers can depend on the protocol half alone.
 mxc = ["dep:serde", "dep:serde_json"]
 streaming = [
-    "dep:librespot-core",
-    "dep:librespot-connect",
-    "dep:librespot-playback",
     "dep:tokio",
     "dep:flume",
     "dep:rustfft",
@@ -76,6 +77,10 @@ streaming = [
     "dep:anyhow",
     "dep:open",
     "dep:fs2",
+    "dep:rodio",
+    "dep:tokio-tungstenite",
+    "dep:futures-util",
+    "dep:libc",
     "dep:toml",
 ]
 
@@ -114,7 +119,7 @@ panic = "abort"
 inherits = "release"
 lto = "thin"
 
-# Debian packaging (audit H7): the binary links libasound2 (librespot ALSA) and
+# Debian packaging: the binary links libasound2 (rodio/ALSA audio output) and
 # libssl3 (native-tls), so the .deb must declare them or `dpkg -i` installs a
 # binary that fails to start with missing shared libraries.
 [package.metadata.deb]

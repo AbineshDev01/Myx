@@ -8,9 +8,7 @@
 use std::f64::consts::{PI, SQRT_2};
 use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 
-use librespot_playback::audio_backend::{Sink, SinkResult};
-use librespot_playback::convert::Converter;
-use librespot_playback::decoder::AudioPacket;
+use crate::audio::backend::{AudioPacket, Sink, SinkResult};
 use rustfft::num_complex::Complex;
 use serde::{Deserialize, Serialize};
 
@@ -303,12 +301,11 @@ impl Sink for EqualizerSink {
         self.inner.stop()
     }
 
-    fn write(&mut self, mut packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
+    fn write(&mut self, mut packet: AudioPacket) -> SinkResult<()> {
         self.refresh_settings();
-        if let AudioPacket::Samples(samples) = &mut packet {
-            self.filters.process_interleaved(samples);
-        }
-        self.inner.write(packet, converter)
+        let AudioPacket::Samples(samples) = &mut packet;
+        self.filters.process_interleaved(samples);
+        self.inner.write(packet)
     }
 }
 

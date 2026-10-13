@@ -1,6 +1,6 @@
 //! myx — the fully-wired terminal Spotify player.
 //!
-//! librespot streaming engine + Web API (your own client id) + album-art-reactive
+//! Soloist playback backend + Web API (your own client id) + album-art-reactive
 //! theming with cross-fades + live equalizer/FFT visualizer, in noodle's visual language.
 //! Multi-section library (playlists / liked / albums / artists), shuffle, repeat,
 //! and a live queue view.
@@ -52,7 +52,7 @@ use myx::components::{gradient_line, gradient_progress, left_bar_block};
 use myx::cover::Cover;
 use myx::engine::{self, Engine, EngineEvent};
 use myx::gradient::{self};
-use myx::liblog::{install_librespot_log, liblog};
+use myx::liblog::{install_log, liblog};
 use myx::lyrics::parse::parse_lrc;
 use myx::reactive::derive_theme;
 use myx::term::{acquire_single_instance_lock, init_terminal, restore_terminal, Term};
@@ -82,7 +82,7 @@ fn main() -> Result<()> {
         }
     }
 
-    install_librespot_log();
+    install_log();
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Refuse to start a second instance — two myx's racing on the shared Web API
@@ -98,17 +98,15 @@ fn main() -> Result<()> {
     };
 
     // OAuth may need to print a browser URL, including when a cached refresh
-    // token has been revoked. Complete both auth flows before entering the
+    // token has been revoked. Complete the Web API flow before entering the
     // alternate screen so that recovery prompts can never be hidden by the TUI.
-    if engine::needs_authorization() || !WebApi::is_cached() {
+    // Soloist handles its own Spotify Connect login on first run, so myx only
+    // authorizes its Web API here.
+    if !WebApi::is_cached() {
         println!("myx: first run — authorizing with Spotify…");
     }
-    let ((creds, webapi), terminal) = auth_then_terminal(
-        || {
-            let creds = engine::credentials()?;
-            let webapi = WebApi::init().context("authorize web api")?;
-            Ok((creds, webapi))
-        },
+    let (webapi, terminal) = auth_then_terminal(
+        || WebApi::init().context("authorize web api"),
         init_terminal,
     )?;
 
@@ -127,9 +125,9 @@ fn main() -> Result<()> {
     ));
 
     #[cfg(target_os = "macos")]
-    let res = run_player_macos(terminal, saved, init_vol, creds, webapi, picker);
+    let res = run_player_macos(terminal, saved, init_vol, webapi, picker);
     #[cfg(not(target_os = "macos"))]
-    let res = run_player(terminal, saved, init_vol, creds, webapi, picker, true);
+    let res = run_player(terminal, saved, init_vol, webapi, picker, true);
     res
 }
 
@@ -137,7 +135,6 @@ fn run_player(
     mut terminal: Term,
     saved: SavedState,
     init_vol: u8,
-    creds: librespot_core::authentication::Credentials,
     webapi: WebApi,
     picker: Picker,
     media_platform_ready: bool,
@@ -151,7 +148,6 @@ fn run_player(
         &mut terminal,
         saved,
         init_vol,
-        creds,
         webapi,
         picker,
         media_platform_ready,
@@ -181,7 +177,6 @@ fn run_player_macos(
     terminal: Term,
     saved: SavedState,
     init_vol: u8,
-    creds: librespot_core::authentication::Credentials,
     webapi: WebApi,
     picker: Picker,
 ) -> Result<()> {
@@ -218,13 +213,13 @@ fn run_player_macos(
         Ok(event_loop) => event_loop,
         Err(e) => {
             liblog(format!("media event loop unavailable: {e}"));
-            return run_player(terminal, saved, init_vol, creds, webapi, picker, false);
+            return run_player(terminal, saved, init_vol, webapi, picker, false);
         }
     };
 
     let proxy = event_loop.create_proxy();
     let player = std::thread::spawn(move || {
-        let res = run_player(terminal, saved, init_vol, creds, webapi, picker, true);
+        let res = run_player(terminal, saved, init_vol, webapi, picker, true);
         let _ = proxy.send_event(PlayerDone);
         res
     });
@@ -317,13 +312,44 @@ fn should_restore_saved_playback(
     configured && startup_uri.is_none() && saved.last_played.is_some()
 }
 
+/// Build the Soloist boot options from the config file and the
+/// environment.
+///
+/// The API key, device name and executable prefer their environment
+/// variable over the `[soloist]` table, so a one-off override never
+/// needs a config edit. The WebSocket endpoint prefers `MYX_SOLOIST_WS`
+/// so a running instance can be adopted without touching discovery.
+fn soloist_boot_options(volume: u8) -> myx::engine::BootOptions {
+    let soloist = &myx::config::get().soloist;
+    myx::engine::BootOptions {
+        api_key: std::env::var("SOLOIST_API_KEY")
+            .ok()
+            .filter(|key| !key.is_empty())
+            .or_else(|| soloist.api_key.clone()),
+        device_name: std::env::var("SOLOIST_DEVICE_NAME")
+            .ok()
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| soloist.device_name.clone()),
+        executable: std::env::var("SOLOIST_EXECUTABLE")
+            .ok()
+            .filter(|path| !path.is_empty())
+            .unwrap_or_else(|| soloist.executable.clone()),
+        route_audio: soloist.route_audio,
+        explicit_ws: std::env::var("MYX_SOLOIST_WS")
+            .ok()
+            .filter(|endpoint| !endpoint.is_empty())
+            .or_else(|| soloist.ws.clone()),
+        data_dir: soloist.data_dir.clone(),
+        volume,
+    }
+}
+
 /// Everything from the loading screen to the event loop. Split out of `main` so
 /// a failure on the way up still leaves the terminal restored.
 async fn boot(
     terminal: &mut Term,
     saved: SavedState,
     init_vol: u8,
-    creds: librespot_core::authentication::Credentials,
     webapi: WebApi,
     picker: Picker,
     media_platform_ready: bool,
@@ -332,7 +358,7 @@ async fn boot(
     let engine = with_loader(
         terminal,
         "connecting to Spotify",
-        engine::run(creds, ev_tx, init_vol),
+        engine::run(ev_tx, soloist_boot_options(init_vol)),
     )
     .await?
     .context("start engine")?;
@@ -892,18 +918,18 @@ fn resume_source(app: &mut App, radio_tx: &flume::Sender<Result<Radio, String>>)
             }
         }
         PlaySource::Radio(seed) => {
-            let session = app.svc.engine.session();
+            let webapi = app.svc.webapi.clone();
             let tx = radio_tx.clone();
             app.status = "resuming radio…".to_string();
             tokio::spawn(async move {
                 let res = match tokio::time::timeout(
                     Duration::from_secs(12),
-                    engine::radio_tracks(&session, &seed),
+                    engine::radio_tracks(webapi, &seed),
                 )
                 .await
                 {
                     Ok(r) => r.map_err(|e| e.to_string()),
-                    Err(_) => Err("timed out (mercury radio endpoint unresponsive)".to_string()),
+                    Err(_) => Err("timed out (recommendations endpoint unresponsive)".to_string()),
                 };
 
                 let _ = tx.send(res.map(|uris| Radio {

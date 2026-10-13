@@ -1,13 +1,13 @@
-//! librespot's `log` bridge and the optional `MYX_LOG` debug file.
+//! A `log` bridge and the optional `MYX_LOG` debug file.
 
 /// Temporary-but-useful diagnostics for startup/library failures. Kept out of
 /// the TUI because alternate-screen rendering hides stderr.
-/// Forwards librespot's own `log` output into `myx.log`. Its Connect
-/// diagnostics are the only account of why the device went inactive, and
-/// without a logger installed they go nowhere.
-pub struct LibrespotLog;
+/// Forwards `log` output — myx's own logs and those of its dependencies
+/// (Soloist, rodio, …) — into `myx.log`. Without a logger installed they go
+/// nowhere.
+pub struct MyxLog;
 
-impl log::Log for LibrespotLog {
+impl log::Log for MyxLog {
     fn enabled(&self, _: &log::Metadata) -> bool {
         true
     }
@@ -23,8 +23,8 @@ impl log::Log for LibrespotLog {
 }
 
 /// Any value of `MYX_LOG` turns logging on; the value only picks how loud
-/// librespot is. `debug`/`trace` open it up, `warn` quiets it back down.
-pub fn install_librespot_log() {
+/// it is. `debug`/`trace` open it up, `warn` quiets it back down.
+pub fn install_log() {
     let Ok(level) = std::env::var("MYX_LOG") else {
         return;
     };
@@ -32,11 +32,11 @@ pub fn install_librespot_log() {
         "trace" => log::LevelFilter::Trace,
         "debug" => log::LevelFilter::Debug,
         "warn" => log::LevelFilter::Warn,
-        // Connect names its own faults at info ("device became inactive");
-        // warn shows only the fallout.
+        // Dependencies name their own faults at info; warn shows only the
+        // fallout.
         _ => log::LevelFilter::Info,
     };
-    if log::set_boxed_logger(Box::new(LibrespotLog)).is_ok() {
+    if log::set_boxed_logger(Box::new(MyxLog)).is_ok() {
         log::set_max_level(filter);
     }
 }

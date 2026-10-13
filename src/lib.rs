@@ -2,7 +2,7 @@
 //!
 //! FE: the design-token system (noodle's visual language) ported to ratatui,
 //! plus album-art-reactive theming with cross-fades.
-//! Backend (`streaming` feature): a lean librespot engine — Connect device + tee'd
+//! Backend (`streaming` feature): a lean Soloist engine — Connect device + tee'd
 //! FFT visualizer + real track-change events.
 
 use std::path::PathBuf;
@@ -28,6 +28,8 @@ pub mod audio;
 pub mod config;
 #[cfg(feature = "streaming")]
 pub mod engine;
+#[cfg(feature = "streaming")]
+pub mod soloist;
 #[cfg(feature = "streaming")]
 pub mod term;
 #[cfg(feature = "streaming")]
