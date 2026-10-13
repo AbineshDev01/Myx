@@ -31,8 +31,20 @@ pub(crate) fn render_nowplaying_view(
     let fw = font.width.max(1) as u32;
     let fh = font.height.max(1) as u32;
 
-    // Reserve 3 rows for text (+1 gap). Cap the art so the group stays compact.
-    let avail_h = top.height.saturating_sub(4);
+    let show_visualizer = myx::config::get().visualizer_enabled && top.height >= 12;
+    let vis_h = if show_visualizer {
+        if top.height >= 16 {
+            (top.height / 3).clamp(4, 7)
+        } else {
+            (top.height / 4).clamp(3, 4)
+        }
+    } else {
+        0
+    };
+
+    // Reserve 3 rows for text (+1 gap) and optional visualizer (+1 gap if shown).
+    let text_and_vis_reserve = 4 + if show_visualizer { vis_h + 1 } else { 0 };
+    let avail_h = top.height.saturating_sub(text_and_vis_reserve);
     let mut art_h = avail_h.clamp(3, 14);
     // Square image width in cells for this height: w = h * fh / fw.
     let mut art_w = (art_h as u32 * fh / fw) as u16;
@@ -41,7 +53,7 @@ pub(crate) fn render_nowplaying_view(
         art_h = (art_w as u32 * fw / fh) as u16;
     }
 
-    let group_h = art_h + 4; // art + gap + title + artist + album
+    let group_h = art_h + text_and_vis_reserve;
     let art_y = top.y + top.height.saturating_sub(group_h) / 2;
     let art_x = top.x + top.width.saturating_sub(art_w) / 2;
     let art_rect = Rect {
@@ -94,6 +106,18 @@ pub(crate) fn render_nowplaying_view(
             Paragraph::new(lines).alignment(Alignment::Center),
             text_rect,
         );
+
+        if show_visualizer {
+            let vis_w = top.width.saturating_sub(4).min(84).max(art_w).min(top.width);
+            let vis_x = top.x + top.width.saturating_sub(vis_w) / 2;
+            let vis_rect = Rect {
+                x: vis_x,
+                y: text_rect.y + text_rect.height + 1,
+                width: vis_w,
+                height: vis_h,
+            };
+            render_fluid_visualizer(f, vis_rect, &app.fluid_sim, theme);
+        }
     }
 }
 

@@ -493,6 +493,12 @@ async fn boot(
             last_click: None,
         },
         art_repaint: ArtRepaint::Idle,
+        visualizer: Some(myx::audio::visualizer::spawn(
+            myx::config::get().visualizer_enabled,
+            myx::config::get().visualizer_sensitivity as f32,
+            String::new(),
+        )),
+        fluid_sim: ui::FluidSimulation::new(128),
     };
 
     run_ui(terminal, app, ev_rx).await
@@ -629,8 +635,9 @@ async fn run_ui(
                     // Resizes lose inline art. Focus only does so when tmux
                     // repaints a pane; compositor focus-follows-mouse events do
                     // not and must not make the cover flash.
-                    Some(Ok(Event::Resize(..))) => {
+                    Some(Ok(Event::Resize(w, _))) => {
                         app.art_repaint = ArtRepaint::Wipe;
+                        app.fluid_sim.resize((w as usize * 2).clamp(32, 256));
                     }
                     Some(Ok(Event::FocusGained)) if in_tmux => {
                         restore_art = true;
@@ -718,10 +725,22 @@ async fn run_ui(
                     }
                 }
 
-                // Synced lyrics move at the animation rate — at the
-                // idle rate the highlighted line lands half a second late.
+                if let Some(vis) = app.visualizer.as_ref() {
+                    let snap = vis.latest_snapshot();
+                    app.fluid_sim.inject_waveform(
+                        &snap,
+                        myx::config::get().visualizer_sensitivity as f32,
+                    );
+                } else {
+                    let snap = myx::audio::AudioWaveSnapshot::default();
+                    app.fluid_sim.inject_waveform(&snap, 1.0);
+                }
+                app.fluid_sim.step(0.016);
+
+                // Synced lyrics and liquid visualizer move at the animation rate.
                 let animating = app.theme.fade.is_some()
-                    || (app.view.mode == RightView::Lyrics && app.view.lyrics_synced);
+                    || (app.view.mode == RightView::Lyrics && app.view.lyrics_synced)
+                    || (app.view.mode == RightView::NowPlaying && myx::config::get().visualizer_enabled);
                 if app.art_repaint != ArtRepaint::Idle {
                     dirty = true;
                 }

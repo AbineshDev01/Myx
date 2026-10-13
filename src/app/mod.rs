@@ -54,6 +54,8 @@ pub(crate) struct App {
     pub(crate) session: SessionState,
     // What the album art box owes the next frame. See ArtRepaint.
     pub(crate) art_repaint: ArtRepaint,
+    pub(crate) visualizer: Option<myx::audio::VisualizerHandle>,
+    pub(crate) fluid_sim: crate::ui::FluidSimulation,
 }
 
 impl App {
