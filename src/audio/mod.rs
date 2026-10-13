@@ -3,6 +3,7 @@
 pub mod backend;
 pub mod equalizer;
 pub mod tap;
+pub mod visualizer;
 
 pub use backend::{AudioPacket, RodioSink, Sink, SinkResult};
 pub(crate) use equalizer::{shared_equalizer, EqualizerControl};
@@ -11,6 +12,7 @@ pub use equalizer::{
     NUM_EQ_BANDS,
 };
 pub use tap::{AudioTap, SinkChain};
+pub use visualizer::{AudioWaveSnapshot, VisualizerHandle, VisualizerStatus};
 
 #[cfg(all(target_os = "linux", feature = "streaming"))]
 pub use backend::suppress_alsa_errors;

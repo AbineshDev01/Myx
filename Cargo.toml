@@ -49,6 +49,9 @@ souvlaki = { version = "0.8.3", default-features = false, features = ["pollster"
 toml = { version = "1", default-features = false, features = ["parse", "serde"], optional = true }
 log = { version = "0.4.33", features = ["std"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = { version = "0.9", optional = true }
+
 [target.'cfg(windows)'.dependencies]
 windows-win = "3.0.0"
 
@@ -80,6 +83,7 @@ streaming = [
     "dep:futures-util",
     "dep:libc",
     "dep:toml",
+    "pipewire",
 ]
 
 # The one, fully-wired binary. `required-features` states what was already

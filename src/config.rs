@@ -45,6 +45,10 @@ pub struct Config {
     /// key is missing; the first-run template sets it, so new installs start
     /// transparent. `T` in the app flips it and rewrites the line.
     pub transparent: bool,
+    /// Whether the liquid waveform visualizer is enabled.
+    pub visualizer_enabled: bool,
+    /// Sensitivity multiplier for the visualizer waveform dynamics (default: 1.0).
+    pub visualizer_sensitivity: f64,
     /// Soloist playback backend settings.
     pub soloist: SoloistConfig,
 }
@@ -83,6 +87,8 @@ impl Default for Config {
             bitrate: 160,
             normalize_volume: false,
             transparent: false,
+            visualizer_enabled: true,
+            visualizer_sensitivity: 1.0,
             soloist: SoloistConfig::default(),
         }
     }
@@ -415,5 +421,17 @@ mod tests {
                 .scrolloff,
             9
         );
+    }
+
+    #[test]
+    fn visualizer_config_defaults_and_overrides() {
+        let def = Config::parse("").expect("empty toml defaults");
+        assert!(def.visualizer_enabled);
+        assert!((def.visualizer_sensitivity - 1.0).abs() < f64::EPSILON);
+
+        let custom = Config::parse("visualizer_enabled = false\nvisualizer_sensitivity = 1.75")
+            .expect("valid toml");
+        assert!(!custom.visualizer_enabled);
+        assert!((custom.visualizer_sensitivity - 1.75).abs() < f64::EPSILON);
     }
 }
