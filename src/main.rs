@@ -28,9 +28,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers, MediaKeyCode, MouseButton, MouseEventKind,
+    Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MediaKeyCode, MouseButton,
+    MouseEventKind,
 };
 use crossterm::execute;
+use futures_util::StreamExt;
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::buffer::CellDiffOption;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
@@ -521,16 +523,7 @@ async fn run_ui(
     mut app: App,
     ev_rx: flume::Receiver<EngineEvent>,
 ) -> Result<MxcHandle> {
-    let (in_tx, in_rx) = flume::unbounded::<Event>();
-    std::thread::spawn(move || loop {
-        if matches!(event::poll(Duration::from_millis(200)), Ok(true)) {
-            if let Ok(ev) = event::read() {
-                if in_tx.send(ev).is_err() {
-                    break;
-                }
-            }
-        }
-    });
+    let mut reader = EventStream::new();
 
     let (meta_tx, meta_rx) = flume::unbounded::<TrackMeta>();
     let (lib_tx, lib_rx) = flume::unbounded::<(Section, Vec<LibItem>)>();
@@ -617,6 +610,51 @@ async fn run_ui(
     loop {
         let touched = tokio::select! {
             biased;
+            ev = reader.next() => {
+                match ev {
+                    Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
+                        let quit = handle_key(&mut app, key.code, key.modifiers, &chans);
+                        if quit {
+                            save_state(&app);
+                            break;
+                        }
+                    }
+                    Some(Ok(Event::Mouse(m))) => {
+                        let quit = handle_mouse(&mut app, &out, m, &chans);
+                        if quit {
+                            save_state(&app);
+                            break;
+                        }
+                    }
+                    // Resizes lose inline art. Focus only does so when tmux
+                    // repaints a pane; compositor focus-follows-mouse events do
+                    // not and must not make the cover flash.
+                    Some(Ok(Event::Resize(..))) => {
+                        app.art_repaint = ArtRepaint::Wipe;
+                    }
+                    Some(Ok(Event::FocusGained)) if in_tmux => {
+                        restore_art = true;
+                    }
+                    Some(Err(err)) => {
+                        liblog(format!("event stream error: {err}"));
+                    }
+                    None => break,
+                    _ => {}
+                }
+                true
+            }
+            ev = ev_rx.recv_async() => {
+                let Ok(ev) = ev else { break };
+                let reconnected = matches!(ev, EngineEvent::Reconnected);
+                handle_engine_event(&mut app, ev, &chans.meta);
+                // The replacement Connect device starts empty; reload what was
+                // playing so a dropped access point costs a gap, not the track.
+                if reconnected && std::mem::take(&mut app.transport.resume_after_reconnect) {
+                    resume_source(&mut app, &chans.radio);
+                    app.transport.playback_started = true;
+                }
+                true
+            }
             _ = frame.tick() => {
                 app.playback.flush_seek(&app.svc.engine, Instant::now());
                 // Drain library updates deterministically before rendering. Keeping
@@ -760,47 +798,6 @@ async fn run_ui(
                     save_state(&app);
                 }
                 false
-            }
-            ev = ev_rx.recv_async() => {
-                let Ok(ev) = ev else { break };
-                let reconnected = matches!(ev, EngineEvent::Reconnected);
-                handle_engine_event(&mut app, ev, &chans.meta);
-                // The replacement Connect device starts empty; reload what was
-                // playing so a dropped access point costs a gap, not the track.
-                if reconnected && std::mem::take(&mut app.transport.resume_after_reconnect) {
-                    resume_source(&mut app, &chans.radio);
-                    app.transport.playback_started = true;
-                }
-                true
-            }
-            ev = in_rx.recv_async() => {
-                match ev {
-                    Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => {
-                        let quit = handle_key(&mut app, key.code, key.modifiers, &chans);
-                        if quit {
-                            save_state(&app);
-                            break;
-                        }
-                    }
-                    Ok(Event::Mouse(m)) => {
-                        let quit = handle_mouse(&mut app, &out, m, &chans);
-                        if quit {
-                            save_state(&app);
-                            break;
-                        }
-                    }
-                    // Resizes lose inline art. Focus only does so when tmux
-                    // repaints a pane; compositor focus-follows-mouse events do
-                    // not and must not make the cover flash.
-                    Ok(Event::Resize(..)) => {
-                        app.art_repaint = ArtRepaint::Wipe;
-                    }
-                    Ok(Event::FocusGained) if in_tmux => {
-                        restore_art = true;
-                    }
-                    _ => {}
-                }
-                true
             }
             ev = souvlaki_rx.recv_async(), if media_events_open => {
                 match consume_media_event(ev, &mut media_events_open) {
