@@ -9,7 +9,7 @@
 //! UI.
 //!
 //! Soloist decodes and plays its own audio, so the
-//! equalizer and visualizer are fed through a
+//! equalizer is fed through a
 //! PipeWire/PulseAudio loopback tap ([`AudioTap`]) that
 //! mirrors Soloist's output back through Myx's sink
 //! chain. See [`soloist`] for the process and WebSocket
@@ -26,7 +26,6 @@ use anyhow::{bail, Context, Result};
 use flume::Sender;
 
 use crate::audio::equalizer::{EqualizerControl, EqualizerSettings};
-use crate::audio::VisBands;
 use crate::soloist::client::{self, ClientEvent, ClientHandle, ClientOptions};
 use crate::soloist::process::{self, SoloistProcess};
 use crate::soloist::protocol::{Command, PlaybackStatus, RepeatMode, ServerEvent};
@@ -63,7 +62,6 @@ pub enum EngineEvent {
 
 /// A running playback engine backed by Soloist.
 pub struct Engine {
-    pub bands: Arc<Mutex<VisBands>>,
     equalizer: EqualizerControl,
     /// Handle for sending commands to Soloist.
     client: ClientHandle,
@@ -100,7 +98,7 @@ pub struct BootOptions {
     /// Path to the `soloist` executable.
     pub executable: String,
     /// Route Soloist's audio through myx's equalizer
-    /// and visualizer via the loopback tap.
+    /// via the loopback tap.
     pub route_audio: bool,
     /// Explicit WebSocket endpoint (`host:port`).
     /// When set, endpoint discovery is skipped.
@@ -132,7 +130,6 @@ impl Engine {
     /// is bounded, and the event bridge keeps running
     /// (reconnecting) in the background.
     pub async fn run(tx: Sender<EngineEvent>, opts: BootOptions) -> Result<Self> {
-        let bands = Arc::new(Mutex::new(VisBands::default()));
         let equalizer = crate::audio::shared_equalizer();
         let volume = opts.volume;
 
@@ -146,7 +143,6 @@ impl Engine {
             route_audio: opts.route_audio,
             data_dir: opts.data_dir,
             equalizer: Arc::clone(&equalizer),
-            bands: Arc::clone(&bands),
         })
         .await
         .context("starting the Soloist playback backend")?;
@@ -185,17 +181,11 @@ impl Engine {
         client.send(Command::set_volume(volume));
 
         Ok(Self {
-            bands,
             equalizer,
             client,
             snapshot,
             process,
         })
-    }
-
-    /// The live spectrum, shared with the visualizer sink.
-    pub fn bands(&self) -> Arc<Mutex<VisBands>> {
-        Arc::clone(&self.bands)
     }
 
     /// Replace the equalizer curve. Takes effect on the

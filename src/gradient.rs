@@ -85,8 +85,8 @@ pub fn interpolate(stops: &[Rgb], t: f32) -> Rgb {
     }
 }
 
-/// Sample `n` evenly-spaced colors across a gradient. Handy for coloring `n`
-/// visualizer bars or an `n`-cell progress bar in one shot.
+/// Sample `n` evenly-spaced colors across a gradient. Handy for coloring
+/// an `n`-cell progress bar in one shot.
 pub fn sample(stops: &[Rgb], n: usize) -> Vec<Rgb> {
     if n == 0 {
         return Vec::new();

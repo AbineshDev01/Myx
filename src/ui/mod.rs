@@ -11,7 +11,6 @@ mod lyrics;
 mod nowplaying;
 mod overlay;
 mod queue;
-mod visualizer;
 
 pub(crate) use equalizer::*;
 pub(crate) use footer::*;
@@ -20,7 +19,6 @@ pub(crate) use lyrics::*;
 pub(crate) use nowplaying::*;
 pub(crate) use overlay::*;
 pub(crate) use queue::*;
-pub(crate) use visualizer::*;
 
 use crate::*;
 
@@ -121,7 +119,7 @@ pub(crate) fn render(f: &mut Frame, app: &App, out: &mut FrameOut, repaint: ArtR
     }
 }
 
-/// The `Now Playing · Lyrics · Visualizer` indicator, active one lit.
+/// The `Now Playing · Lyrics · Queue` indicator, active one lit.
 pub(crate) fn view_tabs<'a>(app: &App, theme: Theme) -> Vec<Span<'a>> {
     let mut spans = vec![Span::styled("←→ ", theme.muted())];
     for (i, v) in RightView::ALL.iter().enumerate() {

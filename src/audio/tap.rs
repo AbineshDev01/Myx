@@ -1,18 +1,16 @@
 //! Route Soloist's audio through myx's own sink chain.
 //!
 //! Spotify Soloist decodes and plays its own audio, so myx's
-//! equalizer and FFT visualizer never see a single sample of it.
-//! This module puts myx back in the path: it creates a virtual
-//! PipeWire/PulseAudio sink, points Soloist at it, and captures
-//! that sink's monitor — pumping the captured PCM through the very
-//! same `EqualizerSink` + `VisualizationSink` + [`RodioSink`]
-//! chain myx would use for its own playback. The equalizer
-//! therefore applies, and the spectrum moves, exactly as before.
+//! equalizer never sees a single sample of it. This module puts
+//! myx back in the path: it creates a virtual PipeWire/PulseAudio
+//! sink, points Soloist at it, and captures that sink's monitor —
+//! pumping the captured PCM through the `EqualizerSink` + [`RodioSink`]
+//! chain. The equalizer therefore applies exactly as before.
 //!
 //! It depends on `pactl` and `parec` (from `pulseaudio-utils` or
 //! `pipewire-pulse`). When they are missing [`AudioTap::start`]
 //! fails with a readable reason, and the caller lets Soloist play
-//! directly — never to silence, only without the visuals.
+//! directly.
 //!
 //! The pipeline is deliberately fail-soft: a missing tool, a
 //! refused sink, or an output backend that will not start all
@@ -22,18 +20,16 @@ use std::io::Read;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::audio::backend::{AudioPacket, RodioSink, Sink};
 use crate::audio::equalizer::{EqualizerControl, EqualizerSink};
-use crate::audio::{VisBands, VisualizationSink};
 
 /// Capture rate. `parec` is told to deliver 44.1 kHz stereo S16LE,
-/// which is the rate the whole chain (equalizer, visualizer, rodio
-/// source) is built around, so the captured packets need no
-/// resampling.
+/// which is the rate the whole chain (equalizer, rodio source)
+/// is built around, so the captured packets need no resampling.
 const RATE: u32 = 44_100;
 const CHANNELS: u32 = 2;
 /// Bytes per read — a whole number of 4-byte stereo S16 frames (1024 frames ≈ 23 ms).
@@ -56,29 +52,25 @@ pub struct AudioTap {
     pump: Option<JoinHandle<()>>,
 }
 
-/// Myx's own sink chain — the visualizer bands and the equalizer
-/// curve — as an owned handle.
+/// Myx's own sink chain — the equalizer curve — as an owned handle.
 ///
 /// The engine hands one out so a second output can be built on
 /// another thread: [`AudioTap::start`] would otherwise have to
 /// borrow the engine, which is exactly what a worker thread cannot
-/// do. Both halves are shared with myx's own player, so the
-/// spectrum drawn and the equalizer applied are the same ones it
-/// uses.
+/// do.
 #[derive(Clone)]
 pub struct SinkChain {
-    bands: Arc<Mutex<VisBands>>,
     equalizer: EqualizerControl,
 }
 
 impl SinkChain {
-    pub(crate) fn new(bands: Arc<Mutex<VisBands>>, equalizer: EqualizerControl) -> Self {
-        Self { bands, equalizer }
+    pub(crate) fn new(equalizer: EqualizerControl) -> Self {
+        Self { equalizer }
     }
 
     /// Take the chain apart, ready to be moved onto the pump thread.
-    fn into_parts(self) -> (Arc<Mutex<VisBands>>, EqualizerControl) {
-        (self.bands, self.equalizer)
+    fn into_parts(self) -> EqualizerControl {
+        self.equalizer
     }
 }
 
@@ -112,14 +104,14 @@ impl AudioTap {
             return Err("capture process has no stdout".to_string());
         };
 
-        let (bands, equalizer) = chain.into_parts();
+        let equalizer = chain.into_parts();
         let stop = Arc::new(AtomicBool::new(false));
         let (ready_tx, ready_rx) = mpsc::channel();
         let pump = match thread::Builder::new()
             .name("myx-soloist-tap".to_string())
             .spawn({
                 let stop = Arc::clone(&stop);
-                move || pump(stdout, bands, equalizer, stop, ready_tx)
+                move || pump(stdout, equalizer, stop, ready_tx)
             }) {
             Ok(handle) => handle,
             Err(e) => {
@@ -186,7 +178,6 @@ impl Drop for AudioTap {
 /// not start.
 fn pump(
     mut stdout: ChildStdout,
-    bands: Arc<Mutex<VisBands>>,
     equalizer: EqualizerControl,
     stop: Arc<AtomicBool>,
     ready: mpsc::Sender<Result<(), String>>,
@@ -198,8 +189,7 @@ fn pump(
             return;
         }
     };
-    let visualized = VisualizationSink::new(Box::new(real), Arc::clone(&bands), RATE as f32);
-    let mut sink: Box<dyn Sink> = Box::new(EqualizerSink::new(Box::new(visualized), equalizer));
+    let mut sink: Box<dyn Sink> = Box::new(EqualizerSink::new(Box::new(real), equalizer));
     if let Err(e) = sink.start() {
         let _ = ready.send(Err(format!("start audio output: {e}")));
         return;
@@ -208,7 +198,6 @@ fn pump(
 
     let mut bytes = vec![0u8; READ_BYTES];
     let mut carry: Vec<u8> = Vec::new();
-    let mut active = false;
     let started = Instant::now();
     let mut heard_audio = false;
     let mut warned = false;
@@ -240,25 +229,12 @@ fn pump(
             );
         }
 
-        if !active {
-            if let Ok(mut b) = bands.lock() {
-                b.is_active = true;
-            }
-            active = true;
-        }
         if sink.write(AudioPacket::Samples(samples)).is_err() {
             break;
         }
     }
 
     let _ = sink.stop();
-    if active {
-        if let Ok(mut b) = bands.lock() {
-            b.is_active = false;
-            b.values.fill(0.0);
-            b.peak_envelope = 1e-6;
-        }
-    }
 }
 
 /// Interleaved little-endian S16 -> normalized `f64` samples.

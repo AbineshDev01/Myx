@@ -2,8 +2,8 @@
 //!
 //! FE: the design-token system (noodle's visual language) ported to ratatui,
 //! plus album-art-reactive theming with cross-fades.
-//! Backend (`streaming` feature): a lean Soloist engine — Connect device + tee'd
-//! FFT visualizer + real track-change events.
+//! Backend (`streaming` feature): a lean Soloist engine — Connect device +
+//! real track-change events.
 
 use std::path::PathBuf;
 

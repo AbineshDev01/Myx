@@ -3,7 +3,7 @@
 //! librespot used to provide the `Sink` trait, the `AudioPacket` type
 //! and the real audio backend. Soloist decodes and plays its own audio,
 //! so myx now owns this small seam instead: a push-based sink chain
-//! (equalizer -> visualizer -> output) that the Soloist loopback tap
+//! (equalizer -> output) that the Soloist loopback tap
 //! feeds, with rodio — the same output library librespot's rodio
 //! backend used — behind it as the speaker.
 //!
@@ -17,7 +17,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 /// A chunk of decoded audio. The only variant myx produces or consumes
 /// is interleaved, normalized (`-1.0..=1.0`) `f64` samples — the
-/// format the equalizer filters and the visualizer transforms.
+/// format the equalizer filters.
 #[derive(Debug, Clone)]
 pub enum AudioPacket {
     Samples(Vec<f64>),

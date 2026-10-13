@@ -22,23 +22,8 @@ pub(crate) fn render_nowplaying_view(
         return;
     }
 
-    // Split: album art + track info on top, a compact spectrum below, lifted a
-    // little off the bottom.
-    let chunks = Layout::vertical([
-        Constraint::Min(6),    // art + text
-        Constraint::Length(7), // spectrum
-        Constraint::Length(2), // breathing room (lifts the spectrum up)
-    ])
-    .split(area);
-    let top = chunks[0];
-    // Push the art + info group down a little from the top.
-    let top = Rect {
-        x: top.x,
-        y: top.y + 3,
-        width: top.width,
-        height: top.height.saturating_sub(3),
-    };
-    let viz_area = chunks[1];
+    // Album art with track details directly beneath — centered as a group.
+    let top = area;
 
     // Derive the cover's cell footprint from the terminal's font aspect so a
     // square image renders square (and our centering math is exact).
@@ -110,8 +95,6 @@ pub(crate) fn render_nowplaying_view(
             text_rect,
         );
     }
-
-    render_visualizer(f, app, theme, viz_area);
 }
 
 /// Slim persistent bottom strip: play state + track, then the progress bar.

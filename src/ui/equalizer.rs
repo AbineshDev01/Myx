@@ -43,10 +43,10 @@ pub(crate) fn render_equalizer_overlay(
     force_area(f, rect);
 }
 
-/// Prefer the free area below the complete cover/metadata group, replacing the
-/// visualizer while the editor is open. The constants mirror the Now Playing
-/// layout without coupling this feature to its renderer; that keeps the two
-/// independently mergeable. Short panes naturally select the compact controls.
+/// Prefer the free area below the complete cover/metadata group while the editor
+/// is open. The constants mirror the Now Playing layout without coupling this
+/// feature to its renderer; that keeps the two independently mergeable. Short
+/// panes naturally select the compact controls.
 fn equalizer_rect(area: Rect, reserve_now_playing: bool) -> Rect {
     let region = if reserve_now_playing {
         let top_height = area

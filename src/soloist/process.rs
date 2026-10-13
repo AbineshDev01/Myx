@@ -9,8 +9,8 @@
 //!   WebSocket API is reused as-is and left running when
 //!   Myx exits.
 //! * Otherwise Myx starts one itself, pointed at the
-//!   loopback tap's sink so the equalizer and visualizer
-//!   keep seeing the audio, and owns it until shutdown.
+//!   loopback tap's sink so the equalizer keeps seeing
+//!   the audio, and owns it until shutdown.
 //!
 //! Soloist resolves its own data directory; Myx reads the
 //! same directory to discover the WebSocket endpoint
@@ -27,7 +27,7 @@ use libc::{SIGKILL, SIGTERM};
 
 use super::discovery;
 use crate::audio::tap::AudioTap;
-use crate::audio::{EqualizerControl, VisBands};
+use crate::audio::EqualizerControl;
 
 /// How long to wait for Soloist to expose its WebSocket API.
 const READINESS_TIMEOUT: Duration = Duration::from_secs(20);
@@ -39,13 +39,12 @@ pub struct StartOptions {
     pub device_name: String,
     pub executable: String,
     /// Route Soloist's audio through myx's loopback tap so
-    /// the equalizer and visualizer keep working.
+    /// the equalizer keeps working.
     pub route_audio: bool,
     /// Override Soloist's data directory (sets
     /// `STATE_DIRECTORY` for the child).
     pub data_dir: Option<PathBuf>,
     pub equalizer: EqualizerControl,
-    pub bands: Arc<Mutex<VisBands>>,
 }
 
 enum Kind {
@@ -101,17 +100,17 @@ impl SoloistProcess {
 
         // The loopback sink, when audio routing is enabled.
         let tap = if opts.route_audio {
-            let chain = crate::audio::SinkChain::new(opts.bands.clone(), opts.equalizer.clone());
+            let chain = crate::audio::SinkChain::new(opts.equalizer.clone());
             match AudioTap::start(chain) {
                 Ok(tap) => Some(tap),
                 Err(err) => {
                     // No compatible audio server: Soloist will
                     // still play to its own default output, but
-                    // the equalizer and visualizer cannot see
-                    // the audio. Keep playback working and warn.
+                    // the equalizer cannot see the audio.
+                    // Keep playback working and warn.
                     log::warn!(
                         target: "myx::soloist",
-                        "loopback tap unavailable ({err}); equalizer and visualizer are inactive"
+                        "loopback tap unavailable ({err}); equalizer is inactive"
                     );
                     None
                 }

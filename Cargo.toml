@@ -24,12 +24,11 @@ color-thief = "0.2"
 # Playback is handled by Spotify Soloist, an external Connect receiver myx
 # drives over its local WebSocket API. The deps below are myx's own: rodio
 # is the audio output (the sink Soloist's loopback is pumped through so the
-# equalizer and visualizer still see the sound), tokio-tungstenite is the
+# equalizer still sees the sound), tokio-tungstenite is the
 # WebSocket client, and libc is the Unix process/signal plumbing for Soloist
 # process management.
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 flume = { version = "0.12", optional = true }
-rustfft = { version = "6", optional = true }
 reqwest = { version = "0.13", optional = true, default-features = false, features = ["blocking", "json", "native-tls"] }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring"] }
 base64 = { version = "0.22", optional = true }
@@ -66,7 +65,6 @@ mxc = ["dep:serde", "dep:serde_json"]
 streaming = [
     "dep:tokio",
     "dep:flume",
-    "dep:rustfft",
     "dep:reqwest",
     "dep:rustls",
     "dep:base64",

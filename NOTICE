@@ -6,8 +6,7 @@ and its interface is inspired by other open-source work. Credit where due:
 
 spotify-player  (https://github.com/aome510/spotify-player)
     Copyright (c) 2021 Thang Pham — MIT License
-    The following files are adapted from that project:
-      * src/audio/visualizer.rs   — the real-time FFT visualization sink
+    The following file was adapted from that project:
       * src/engine/auth.rs        — the OAuth 2.0 PKCE flow
     Additionally, the librespot streaming/Spirc wiring, the mercury-based radio
     lookup, and the "reclaim playback via device transfer" approach were learned

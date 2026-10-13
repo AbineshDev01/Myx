@@ -1,7 +1,7 @@
 //! myx — the fully-wired terminal Spotify player.
 //!
 //! Soloist playback backend + Web API (your own client id) + album-art-reactive
-//! theming with cross-fades + live equalizer/FFT visualizer, in noodle's visual language.
+//! theming with cross-fades + live equalizer, in noodle's visual language.
 //! Multi-section library (playlists / liked / albums / artists), shuffle, repeat,
 //! and a live queue view.
 
@@ -46,12 +46,11 @@ use input::*;
 use myx::anim::ThemeFade;
 use myx::audio::{
     EqualizerPreset, EqualizerSettings, EQ_FREQUENCIES_HZ, MAX_EQ_GAIN_DB, MIN_EQ_GAIN_DB,
-    NUM_BANDS, NUM_EQ_BANDS,
+    NUM_EQ_BANDS,
 };
 use myx::components::{gradient_line, gradient_progress, left_bar_block};
 use myx::cover::Cover;
 use myx::engine::{self, Engine, EngineEvent};
-use myx::gradient::{self};
 use myx::liblog::{install_log, liblog};
 use myx::lyrics::parse::parse_lrc;
 use myx::reactive::derive_theme;
@@ -621,8 +620,7 @@ async fn run_ui(
             _ = frame.tick() => {
                 app.playback.flush_seek(&app.svc.engine, Instant::now());
                 // Drain library updates deterministically before rendering. Keeping
-                // this solely as a select arm could starve under a hot player-event
-                // stream / 60fps visualizer — which looked like a frozen library.
+                // this solely as a select arm could starve under a hot player-event stream — which looked like a frozen library.
                 while let Ok((section, mut items)) = lib_rx.try_recv() {
                     let count = items.len();
                     dirty = true;
@@ -682,13 +680,10 @@ async fn run_ui(
                     }
                 }
 
-                // The visualizer only animates while it is on screen; on Queue
-                // its frame rate buys nothing. Synced lyrics move too — at the
+                // Synced lyrics move at the animation rate — at the
                 // idle rate the highlighted line lands half a second late.
                 let animating = app.theme.fade.is_some()
-                    || (app.view.mode == RightView::Lyrics && app.view.lyrics_synced)
-                    || (app.view.mode == RightView::NowPlaying
-                        && app.svc.engine.bands.try_lock().map(|g| g.is_active).unwrap_or(false));
+                    || (app.view.mode == RightView::Lyrics && app.view.lyrics_synced);
                 if app.art_repaint != ArtRepaint::Idle {
                     dirty = true;
                 }

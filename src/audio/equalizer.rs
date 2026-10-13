@@ -1,7 +1,6 @@
 //! Real-time ten-band graphic equalizer.
 //!
-//! The equalizer sits in front of the visualizer and the real audio backend, so
-//! the spectrum on screen is the spectrum the listener actually hears. The
+//! The equalizer sits in front of the real audio backend. The
 //! audio thread only checks a tiny shared settings snapshot between packets;
 //! it never waits for the UI and allocates nothing while processing samples.
 
@@ -9,7 +8,6 @@ use std::f64::consts::{PI, SQRT_2};
 use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 
 use crate::audio::backend::{AudioPacket, Sink, SinkResult};
-use rustfft::num_complex::Complex;
 use serde::{Deserialize, Serialize};
 
 pub const NUM_EQ_BANDS: usize = 10;
@@ -262,7 +260,7 @@ impl FilterBank {
     }
 }
 
-/// A transforming sink: unlike the visualizer tee, this intentionally replaces
+/// A transforming sink: this intentionally replaces
 /// sample packets before forwarding them to the next sink.
 pub(crate) struct EqualizerSink {
     inner: Box<dyn Sink>,
@@ -355,14 +353,20 @@ fn cascade_response_db(
     sample_rate: f64,
 ) -> f64 {
     let omega = 2.0 * PI * frequency / sample_rate;
-    let z1 = Complex::from_polar(1.0, -omega);
-    let z2 = Complex::from_polar(1.0, -2.0 * omega);
+    let cos1 = omega.cos();
+    let sin1 = omega.sin();
+    let cos2 = (2.0 * omega).cos();
+    let sin2 = (2.0 * omega).sin();
     coeffs
         .iter()
         .map(|c| {
-            let numerator = c.b0 + c.b1 * z1 + c.b2 * z2;
-            let denominator = 1.0 + c.a1 * z1 + c.a2 * z2;
-            20.0 * (numerator / denominator).norm().log10()
+            let num_re = c.b0 + c.b1 * cos1 + c.b2 * cos2;
+            let num_im = -c.b1 * sin1 - c.b2 * sin2;
+            let den_re = 1.0 + c.a1 * cos1 + c.a2 * cos2;
+            let den_im = -c.a1 * sin1 - c.a2 * sin2;
+            let num_sq = num_re * num_re + num_im * num_im;
+            let den_sq = den_re * den_re + den_im * den_im;
+            10.0 * (num_sq / den_sq).log10()
         })
         .sum()
 }

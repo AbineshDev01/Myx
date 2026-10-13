@@ -82,7 +82,7 @@ impl ArtRepaint {
 
 /// Ceiling on the redraw rate: one frame per ~60Hz terminal refresh.
 pub(crate) const MIN_FRAME: Duration = Duration::from_millis(16);
-/// Redraw rate while the visualizer or a theme fade is running.
+/// Redraw rate while an animation (theme fade or synced lyrics) is running.
 pub(crate) const ANIM_FRAME: Duration = Duration::from_millis(33);
 /// Redraw rate when nothing changed — enough to keep the clock and progress bar
 /// honest without repainting an identical frame 60 times a second.
