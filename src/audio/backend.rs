@@ -72,6 +72,35 @@ struct Shared {
     done: AtomicBool,
 }
 
+/// Suppress ALSA's default error logging to stderr.
+///
+/// ALSA's default error handler writes directly to stderr on buffer underruns,
+/// corrupting terminal TUI applications. Suppressing it silences ALSA's internal logs.
+#[cfg(all(target_os = "linux", feature = "streaming"))]
+pub fn suppress_alsa_errors() {
+    use std::os::raw::{c_char, c_int};
+
+    type SndLibErrorHandlerT =
+        Option<unsafe extern "C" fn(*const c_char, c_int, *const c_char, c_int, *const c_char)>;
+
+    extern "C" {
+        fn snd_lib_error_set_handler(handler: SndLibErrorHandlerT) -> c_int;
+    }
+
+    unsafe extern "C" fn silent_error_handler(
+        _file: *const c_char,
+        _line: c_int,
+        _function: *const c_char,
+        _err: c_int,
+        _fmt: *const c_char,
+    ) {
+    }
+
+    unsafe {
+        snd_lib_error_set_handler(Some(silent_error_handler));
+    }
+}
+
 impl RodioSink {
     /// Open the default output device and begin pulling from the buffer.
     ///
@@ -80,6 +109,9 @@ impl RodioSink {
     /// to, and the caller is expected to let Soloist play straight to
     /// its own output in that case.
     pub fn new() -> SinkResult<Self> {
+        #[cfg(all(target_os = "linux", feature = "streaming"))]
+        suppress_alsa_errors();
+
         let stream = rodio::OutputStreamBuilder::open_default_stream()
             .map_err(|e| format!("no audio output device: {e}"))?;
         let sink = rodio::Sink::connect_new(stream.mixer());
@@ -142,9 +174,9 @@ impl Sink for RodioSink {
     }
 }
 
-/// Pulls buffered samples for rodio at the device's pace. Blocks while
-/// the buffer is empty and ends (`None`) once [`RodioSink::stop`] has
-/// run, so rodio's reader thread never outlives the sink.
+/// Pulls buffered samples for rodio at the device's pace. Streams silence
+/// (0.0) while the buffer is empty to avoid starving the real-time audio
+/// hardware buffer, and ends (`None`) once [`RodioSink::stop`] has run.
 struct SampleSource {
     shared: Arc<Shared>,
 }
@@ -153,17 +185,22 @@ impl Iterator for SampleSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
+        if self.shared.done.load(Ordering::SeqCst) {
+            return None;
+        }
         let mut queue = self.shared.queue.lock().unwrap();
-        loop {
-            if self.shared.done.load(Ordering::SeqCst) {
-                return None;
+        if self.shared.done.load(Ordering::SeqCst) {
+            return None;
+        }
+        if let Some(sample) = queue.pop_front() {
+            if queue.len() < MAX_SAMPLES {
+                self.shared.not_full.notify_one();
             }
-            if let Some(sample) = queue.pop_front() {
-                // A slot freed up: wake a writer that may be waiting.
-                self.shared.not_full.notify_all();
-                return Some(sample);
-            }
-            queue = self.shared.ready.wait(queue).map_err(|_| ()).ok()?;
+            Some(sample)
+        } else {
+            // Stream silence when the buffer is dry or idle rather than
+            // blocking the real-time audio thread, preventing ALSA underruns.
+            Some(0.0)
         }
     }
 }

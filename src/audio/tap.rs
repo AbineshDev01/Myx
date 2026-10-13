@@ -36,8 +36,8 @@ use crate::audio::{VisBands, VisualizationSink};
 /// resampling.
 const RATE: u32 = 44_100;
 const CHANNELS: u32 = 2;
-/// Bytes per read — a whole number of 4-byte stereo S16 frames.
-const READ_BYTES: usize = 16 * 1024;
+/// Bytes per read — a whole number of 4-byte stereo S16 frames (1024 frames ≈ 23 ms).
+const READ_BYTES: usize = 4 * 1024;
 /// How long the output backend may take to come up before we give
 /// up on it.
 const START_TIMEOUT: Duration = Duration::from_secs(5);

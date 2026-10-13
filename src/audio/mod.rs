@@ -13,3 +13,6 @@ pub use equalizer::{
 };
 pub use tap::{AudioTap, SinkChain};
 pub use visualizer::{VisBands, VisualizationSink, NUM_BANDS};
+
+#[cfg(all(target_os = "linux", feature = "streaming"))]
+pub use backend::suppress_alsa_errors;

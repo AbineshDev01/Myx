@@ -83,6 +83,8 @@ fn main() -> Result<()> {
     }
 
     install_log();
+    #[cfg(all(target_os = "linux", feature = "streaming"))]
+    myx::audio::suppress_alsa_errors();
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Refuse to start a second instance — two myx's racing on the shared Web API
