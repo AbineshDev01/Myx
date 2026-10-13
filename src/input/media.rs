@@ -29,6 +29,9 @@ pub(crate) fn handle_media_control_event(
         }
         MediaControlEvent::Toggle => {
             if app.transport.playback_started {
+                if let Some(now) = app.playback.now.as_mut() {
+                    now.is_playing = !now.is_playing;
+                }
                 let _ = app.svc.engine.toggle();
             } else {
                 // Resume the persisted source (context/radio/liked).
@@ -38,6 +41,9 @@ pub(crate) fn handle_media_control_event(
         }
         MediaControlEvent::Play => {
             if app.transport.playback_started {
+                if let Some(now) = app.playback.now.as_mut() {
+                    now.is_playing = true;
+                }
                 let _ = app.svc.engine.play();
             } else {
                 // Resume the persisted source (context/radio/liked).
@@ -46,9 +52,15 @@ pub(crate) fn handle_media_control_event(
             }
         }
         MediaControlEvent::Pause => {
+            if let Some(now) = app.playback.now.as_mut() {
+                now.is_playing = false;
+            }
             let _ = app.svc.engine.pause();
         }
         MediaControlEvent::Stop => {
+            if let Some(now) = app.playback.now.as_mut() {
+                now.is_playing = false;
+            }
             app.svc.engine.stop();
         }
         MediaControlEvent::Seek(direction) => match direction {

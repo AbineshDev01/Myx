@@ -94,6 +94,9 @@ pub(crate) fn handle_key(
         }
         KeyCode::Char(' ') | KeyCode::Char('p') | KeyCode::Media(MediaKeyCode::PlayPause) => {
             if app.transport.playback_started {
+                if let Some(now) = app.playback.now.as_mut() {
+                    now.is_playing = !now.is_playing;
+                }
                 let _ = app.svc.engine.toggle();
             } else {
                 // Resume the persisted source (context/radio/liked).
@@ -102,6 +105,9 @@ pub(crate) fn handle_key(
             }
         }
         KeyCode::Media(MediaKeyCode::Stop) => {
+            if let Some(now) = app.playback.now.as_mut() {
+                now.is_playing = false;
+            }
             app.svc.engine.stop();
         }
         KeyCode::Char('n') | KeyCode::Media(MediaKeyCode::TrackNext) => {
