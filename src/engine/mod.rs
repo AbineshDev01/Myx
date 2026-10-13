@@ -21,6 +21,7 @@
 //! still powers browsing, search, lyrics and artwork.
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use flume::Sender;
@@ -77,6 +78,15 @@ pub struct Engine {
 
 /// The last-known playback state, reconstructed from
 /// Soloist's events. Soloist's granular events
+#[derive(Debug, Clone)]
+pub(crate) struct PendingSeek {
+    pub target_ms: u64,
+    pub target_uri: Option<String>,
+    pub created_at: Instant,
+}
+
+/// The last-known playback state, reconstructed from
+/// Soloist's events. Soloist's granular events
 /// (`playback_changed`, `track_changed`) do not repeat
 /// the full context, so the engine keeps a running
 /// snapshot and fills in the uri/position the UI needs.
@@ -87,7 +97,9 @@ struct Snapshot {
     playing: bool,
     shuffle: bool,
     repeat: RepeatMode,
+    pending_seek: Option<PendingSeek>,
 }
+
 
 /// Options for booting the Soloist playback backend.
 pub struct BootOptions {
@@ -171,7 +183,13 @@ impl Engine {
         // Bridge Soloist events into the UI's engine-event
         // channel.
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
-        tokio::spawn(bridge_events(event_rx, tx, Arc::clone(&snapshot)));
+        tokio::spawn(bridge_events(
+            event_rx,
+            tx,
+            Arc::clone(&snapshot),
+            client.clone(),
+        ));
+
 
         // Ask Soloist for its full state so the UI can paint the
         // current track immediately, make sure Myx is the active
@@ -248,13 +266,20 @@ impl Engine {
         position_ms: u32,
         shuffle: bool,
     ) -> Result<()> {
-        let _ = track_uri;
-        self.send(Command::play_uri(context_uri))?;
-        self.send(Command::set_shuffle(shuffle))?;
         if position_ms > 0 {
-            self.send(Command::seek(position_ms as u64))?;
+            let mut snap = self.snapshot.lock().unwrap();
+            if let Some(ref t) = track_uri {
+                snap.uri = t.clone();
+            }
+            snap.position_ms = position_ms;
+            snap.pending_seek = Some(PendingSeek {
+                target_ms: position_ms as u64,
+                target_uri: track_uri,
+                created_at: Instant::now(),
+            });
         }
-        Ok(())
+        self.send(Command::play_uri(context_uri))?;
+        self.send(Command::set_shuffle(shuffle))
     }
 
     /// Play an explicit list of tracks, optionally
@@ -264,7 +289,7 @@ impl Engine {
     /// the list is delivered as: the remaining tracks are
     /// queued, the start track (or the first track) is
     /// played, and playback seeks to the requested
-    /// position.
+    /// position once the track is loaded.
     pub fn play_tracks(
         &self,
         tracks: Vec<String>,
@@ -280,11 +305,19 @@ impl Engine {
             .filter(|uri| tracks.iter().any(|t| t == uri))
             .unwrap_or_else(|| tracks[0].clone());
 
+        if start_position_ms > 0 {
+            let mut snap = self.snapshot.lock().unwrap();
+            snap.uri = start.clone();
+            snap.position_ms = start_position_ms;
+            snap.pending_seek = Some(PendingSeek {
+                target_ms: start_position_ms as u64,
+                target_uri: Some(start.clone()),
+                created_at: Instant::now(),
+            });
+        }
+
         // Play the starting track immediately so playback begins without delay.
         self.send(Command::play_uri(start.clone()))?;
-        if start_position_ms > 0 {
-            self.send(Command::seek(start_position_ms as u64))?;
-        }
         self.send(Command::set_shuffle(shuffle))?;
 
         // Queue subsequent tracks that follow `start` in order (capped at 50
@@ -299,12 +332,19 @@ impl Engine {
     /// Play a single track at an optional position.
     pub fn play_track_at(&self, uri: String, position_ms: u32) -> Result<()> {
         self.process.clear_tap();
-        self.send(Command::play_uri(uri))?;
         if position_ms > 0 {
-            self.send(Command::seek(position_ms as u64))?;
+            let mut snap = self.snapshot.lock().unwrap();
+            snap.uri = uri.clone();
+            snap.position_ms = position_ms;
+            snap.pending_seek = Some(PendingSeek {
+                target_ms: position_ms as u64,
+                target_uri: Some(uri.clone()),
+                created_at: Instant::now(),
+            });
         }
-        Ok(())
+        self.send(Command::play_uri(uri))
     }
+
 
     /// Resume playback.
     pub fn play(&self) -> Result<()> {
@@ -336,12 +376,14 @@ impl Engine {
 
     /// Skip to the next track.
     pub fn next(&self) -> Result<()> {
+        self.snapshot.lock().unwrap().pending_seek = None;
         self.process.clear_tap();
         self.send(Command::skip_next())
     }
 
     /// Skip to the previous track.
     pub fn prev(&self) -> Result<()> {
+        self.snapshot.lock().unwrap().pending_seek = None;
         self.process.clear_tap();
         self.send(Command::skip_prev())
     }
@@ -387,8 +429,22 @@ impl Engine {
     /// Seek to a position in the current track.
     pub fn seek(&self, position_ms: u32) -> Result<()> {
         self.process.clear_tap();
+        {
+            let mut snap = self.snapshot.lock().unwrap();
+            snap.position_ms = position_ms;
+            snap.pending_seek = Some(PendingSeek {
+                target_ms: position_ms as u64,
+                target_uri: if snap.uri.is_empty() {
+                    None
+                } else {
+                    Some(snap.uri.clone())
+                },
+                created_at: Instant::now(),
+            });
+        }
         self.send(Command::seek(position_ms as u64))
     }
+
 }
 
 impl Drop for Engine {
@@ -407,6 +463,7 @@ async fn bridge_events(
     rx: flume::Receiver<ClientEvent>,
     tx: Sender<EngineEvent>,
     snapshot: Arc<Mutex<Snapshot>>,
+    client: client::ClientHandle,
 ) {
     while let Ok(event) = rx.recv_async().await {
         match event {
@@ -428,7 +485,7 @@ async fn bridge_events(
                 );
             }
             ClientEvent::Event(server) => {
-                handle_server_event(&server, &snapshot, &tx);
+                handle_server_event(&server, &snapshot, &tx, &client);
             }
         }
     }
@@ -440,6 +497,7 @@ fn handle_server_event(
     event: &ServerEvent,
     snapshot: &Arc<Mutex<Snapshot>>,
     tx: &Sender<EngineEvent>,
+    client: &client::ClientHandle,
 ) {
     let mut snap = snapshot.lock().unwrap();
     match event {
@@ -465,17 +523,43 @@ fn handle_server_event(
             if let Some(item) = &state.item {
                 snap.uri = item.uri.clone();
             }
-            if let Some(pos) = &state.position {
-                snap.position_ms = pos.position_ms.min(u32::MAX as u64) as u32;
-            }
             if let Some(options) = &state.options {
                 snap.shuffle = options.shuffle;
                 snap.repeat = options.repeat;
             }
+
+            // Check if we have a pending seek for this track
+            let mut seek_to_dispatch = None;
+            if let Some(seek) = snap.pending_seek.clone() {
+                if seek.created_at.elapsed() > Duration::from_secs(10) {
+                    snap.pending_seek = None;
+                } else {
+                    let track_matches = match (&seek.target_uri, &state.item) {
+                        (Some(target), Some(item)) => item.uri == *target,
+                        (None, Some(_)) => true,
+                        _ => false,
+                    };
+                    if track_matches && state.can_seek() {
+                        seek_to_dispatch = Some(seek.target_ms);
+                    }
+                }
+            }
+
+            if let Some(pos_ms) = seek_to_dispatch {
+                snap.pending_seek = None;
+                snap.position_ms = pos_ms as u32;
+                let _ = client.send(Command::seek(pos_ms));
+            } else if snap.pending_seek.is_none() {
+                if let Some(pos) = &state.position {
+                    snap.position_ms = pos.position_ms.min(u32::MAX as u64) as u32;
+                }
+            }
+
             let uri = snap.uri.clone();
             let position = snap.position_ms;
+            let playing = snap.playing;
             drop(snap);
-            if state.status.is_playing() {
+            if playing {
                 let _ = tx.send(EngineEvent::Playing {
                     uri,
                     position_ms: position,
@@ -491,7 +575,14 @@ fn handle_server_event(
         }
         ServerEvent::TrackChanged { item } => {
             snap.uri = item.uri.clone();
-            snap.position_ms = 0;
+            let has_matching_seek = snap
+                .pending_seek
+                .as_ref()
+                .map(|s| s.target_uri.as_ref().map(|u| u == &item.uri).unwrap_or(true))
+                .unwrap_or(false);
+            if !has_matching_seek {
+                snap.position_ms = 0;
+            }
             let uri = snap.uri.clone();
             drop(snap);
             let _ = tx.send(EngineEvent::TrackChanged { uri });
@@ -520,7 +611,24 @@ fn handle_server_event(
             }
         }
         ServerEvent::PositionSync { position } => {
-            snap.position_ms = position.position_ms.min(u32::MAX as u64) as u32;
+            let mut dispatch_seek = None;
+            if let Some(seek) = snap.pending_seek.clone() {
+                if seek.created_at.elapsed() > Duration::from_secs(10) {
+                    snap.pending_seek = None;
+                } else if position.position_ms == seek.target_ms {
+                    snap.pending_seek = None;
+                    snap.position_ms = seek.target_ms as u32;
+                } else if seek.created_at.elapsed() > Duration::from_millis(150) {
+                    dispatch_seek = Some(seek.target_ms);
+                }
+            }
+            if let Some(pos_ms) = dispatch_seek {
+                let _ = client.send(Command::seek(pos_ms));
+            }
+
+            if snap.pending_seek.is_none() {
+                snap.position_ms = position.position_ms.min(u32::MAX as u64) as u32;
+            }
             let (uri, position_ms) = (snap.uri.clone(), snap.position_ms);
             drop(snap);
             let _ = tx.send(EngineEvent::PositionCorrection { uri, position_ms });
@@ -536,9 +644,20 @@ fn handle_server_event(
         | ServerEvent::CommandResult { .. } => {}
         ServerEvent::Error { message } => {
             log::warn!(target: "myx::engine", "soloist reported an error: {message}");
+            if message.contains("seek_to_restricted") {
+                let seek = snap.pending_seek.clone();
+                if let Some(seek) = seek {
+                    let client_clone = client.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                        client_clone.send(Command::seek(seek.target_ms));
+                    });
+                }
+            }
         }
     }
 }
+
 
 // ---------------------------------------------------------------------------
 // Radio (track recommendations)
@@ -837,6 +956,7 @@ mod tests {
     fn server_event_translation_playing_and_track_changed() {
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
         let (tx, rx) = flume::unbounded();
+        let (client, _cmd_rx) = client::ClientHandle::dummy();
 
         let track_item = crate::soloist::protocol::Entity {
             uri: "spotify:track:123".into(),
@@ -846,6 +966,7 @@ mod tests {
             &ServerEvent::TrackChanged { item: track_item },
             &snapshot,
             &tx,
+            &client,
         );
         match rx.try_recv().unwrap() {
             EngineEvent::TrackChanged { uri } => assert_eq!(uri, "spotify:track:123"),
@@ -858,6 +979,7 @@ mod tests {
             },
             &snapshot,
             &tx,
+            &client,
         );
         match rx.try_recv().unwrap() {
             EngineEvent::Playing { uri, position_ms } => {
@@ -876,6 +998,7 @@ mod tests {
             },
             &snapshot,
             &tx,
+            &client,
         );
         match rx.try_recv().unwrap() {
             EngineEvent::PositionCorrection { uri, position_ms } => {
@@ -891,6 +1014,7 @@ mod tests {
             },
             &snapshot,
             &tx,
+            &client,
         );
         match rx.try_recv().unwrap() {
             EngineEvent::Paused { uri, position_ms } => {
@@ -900,4 +1024,82 @@ mod tests {
             other => panic!("expected Paused, got {other:?}"),
         }
     }
+
+    #[test]
+    fn pending_seek_dispatches_when_track_becomes_ready() {
+        let snapshot = Arc::new(Mutex::new(Snapshot {
+            uri: "spotify:track:123".into(),
+            position_ms: 30000,
+            pending_seek: Some(PendingSeek {
+                target_ms: 30000,
+                target_uri: Some("spotify:track:123".into()),
+                created_at: Instant::now(),
+            }),
+            ..Default::default()
+        }));
+        let (tx, rx) = flume::unbounded();
+        let (client, cmd_rx) = client::ClientHandle::dummy();
+
+        let track_item = crate::soloist::protocol::Entity {
+            uri: "spotify:track:123".into(),
+            ..Default::default()
+        };
+
+        // 1. TrackChanged arrives. Position should NOT be reset to 0 because pending_seek is active!
+        handle_server_event(
+            &ServerEvent::TrackChanged {
+                item: track_item.clone(),
+            },
+            &snapshot,
+            &tx,
+            &client,
+        );
+        assert_eq!(snapshot.lock().unwrap().position_ms, 30000);
+        let _ = rx.try_recv().unwrap();
+
+        // 2. PlaybackChanged (buffering) arrives. Position remains at target.
+        handle_server_event(
+            &ServerEvent::PlaybackChanged {
+                status: PlaybackStatus::Buffering,
+            },
+            &snapshot,
+            &tx,
+            &client,
+        );
+        match rx.try_recv().unwrap() {
+            EngineEvent::Playing { position_ms, .. } => assert_eq!(position_ms, 30000),
+            other => panic!("expected Playing, got {other:?}"),
+        }
+
+        // 3. PlaybackState arrives where seek is NOT available yet (e.g. still connecting).
+        handle_server_event(
+            &ServerEvent::PlaybackState(crate::soloist::protocol::PlaybackState {
+                status: PlaybackStatus::Buffering,
+                item: Some(track_item.clone()),
+                available_actions: Some(serde_json::json!({"pause": {}})),
+                ..Default::default()
+            }),
+            &snapshot,
+            &tx,
+            &client,
+        );
+        assert!(cmd_rx.try_recv().is_err(), "seek must not be dispatched before it is available");
+
+        // 4. PlaybackState arrives where seek IS available. Seek command should be dispatched!
+        handle_server_event(
+            &ServerEvent::PlaybackState(crate::soloist::protocol::PlaybackState {
+                status: PlaybackStatus::Playing,
+                item: Some(track_item),
+                available_actions: Some(serde_json::json!({"seek": {}})),
+                ..Default::default()
+            }),
+            &snapshot,
+            &tx,
+            &client,
+        );
+        let cmd = cmd_rx.try_recv().expect("seek should be dispatched");
+        assert_eq!(cmd.position_ms, Some(30000));
+        assert!(snapshot.lock().unwrap().pending_seek.is_none());
+    }
+
 }

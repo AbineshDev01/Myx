@@ -72,7 +72,14 @@ impl ClientHandle {
     pub fn send(&self, cmd: Command) -> bool {
         self.cmd_tx.send(cmd).is_ok()
     }
+
+    #[cfg(test)]
+    pub fn dummy() -> (Self, flume::Receiver<Command>) {
+        let (cmd_tx, rx) = flume::unbounded();
+        (Self { cmd_tx }, rx)
+    }
 }
+
 
 /// Spawn the connection supervisor. Emits events into `events`
 /// until the process exits (reconnection is infinite by design —

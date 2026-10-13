@@ -197,4 +197,27 @@ mod tests {
         playback.now = None;
         assert!(!playback.freeze());
     }
+
+    #[test]
+    fn paused_restored_position_is_exact() {
+        let now = Instant::now();
+        let playback = PlaybackState {
+            now: Some(NowPlaying {
+                uri: "spotify:track:x".to_string(),
+                title: String::new(),
+                artist: String::new(),
+                album: String::new(),
+                duration_ms: 200_000,
+                position_ms: 45_000,
+                position_at: now - Duration::from_secs(10),
+                is_playing: false,
+                cover: None,
+            }),
+            seek_target: None,
+            seek_last_step: now,
+            seek_last_input: now,
+        };
+        assert_eq!(playback.position_ms(), 45_000);
+    }
 }
+

@@ -206,7 +206,7 @@ pub struct AuthState {
     pub device_name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct PlaybackState {
     #[serde(default)]
     pub status: PlaybackStatus,
@@ -225,6 +225,16 @@ pub struct PlaybackState {
     #[serde(default, rename = "available_actions")]
     pub available_actions: Option<serde_json::Value>,
 }
+
+impl PlaybackState {
+    pub fn can_seek(&self) -> bool {
+        self.available_actions
+            .as_ref()
+            .and_then(|a| a.get("seek"))
+            .is_some()
+    }
+}
+
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct QueueEntry {

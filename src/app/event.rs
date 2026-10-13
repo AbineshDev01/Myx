@@ -13,6 +13,9 @@ pub(crate) fn handle_engine_event(
     }
     match ev {
         EngineEvent::TrackChanged { uri } => {
+            if !app.transport.playback_started {
+                return;
+            }
             app.status = "loading track…".to_string();
             if let Some(track_id) = track_id_from_uri(&uri) {
                 // Record what we're waiting for so an earlier track's reply,
@@ -44,6 +47,9 @@ pub(crate) fn handle_engine_event(
             }
         }
         EngineEvent::Paused { position_ms, .. } => {
+            if !app.transport.playback_started {
+                return;
+            }
             if let Some(n) = app.playback.now.as_mut() {
                 n.is_playing = false;
             }
@@ -55,6 +61,9 @@ pub(crate) fn handle_engine_event(
             }
         }
         EngineEvent::Stopped => {
+            if !app.transport.playback_started {
+                return;
+            }
             app.playback.now = None;
             app.transport.playback_started = false;
             // librespot cleared its context too, so only a fresh load can
@@ -65,6 +74,9 @@ pub(crate) fn handle_engine_event(
             }
         }
         EngineEvent::PositionCorrection { position_ms, .. } => {
+            if !app.transport.playback_started {
+                return;
+            }
             app.playback.set_local_position(position_ms, true);
             if let (Some(n), Some(controls)) =
                 (app.playback.now.as_ref(), app.media_controls.as_mut())
@@ -81,6 +93,7 @@ pub(crate) fn handle_engine_event(
                 let _ = controls.set_playback(playback);
             }
         }
+
         EngineEvent::Reconnecting => {
             // The old player is gone with the old connection, so the audio has
             // already stopped. Stop the progress bar with it instead of letting
