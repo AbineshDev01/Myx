@@ -232,6 +232,8 @@ async fn spawn_and_wait(
     // its runtime files from, so discovery and the child
     // always agree.
     command.env("STATE_DIRECTORY", data_dir);
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
     // Kill Soloist if myx dies unexpectedly so we never leak
@@ -250,6 +252,12 @@ async fn spawn_and_wait(
     let mut child = command
         .spawn()
         .map_err(|e| SpawnOutcome::Failed(format!("spawn `{executable}`: {e}")))?;
+
+    // Drain stdout continuously to prevent pipe buffer starvation and keep
+    // child process log messages from leaking into the terminal TUI.
+    if let Some(stdout) = child.stdout.take() {
+        thread::spawn(move || drain_stdout(stdout));
+    }
 
     // Drain stderr continuously (so the pipe never fills and
     // blocks Soloist) while retaining the tail for error
@@ -292,6 +300,22 @@ async fn spawn_and_wait(
     }
 }
 
+/// Continuously drain the child process's stdout and route it to
+/// the log file if logging is enabled, preventing pipe starvation and
+/// preventing any log output from leaking into the terminal TUI.
+fn drain_stdout(stdout: std::process::ChildStdout) {
+    use std::io::{BufRead, BufReader};
+    let reader = BufReader::new(stdout);
+    for line in reader.lines() {
+        match line {
+            Ok(line) => {
+                crate::liblog::liblog(format!("soloist: {line}"));
+            }
+            Err(_) => break,
+        }
+    }
+}
+
 /// Copy a child's stderr into a bounded buffer, keeping the
 /// last few kilobytes.
 fn drain_stderr(mut stderr: std::process::ChildStderr, captured: Arc<Mutex<String>>) {
@@ -301,12 +325,16 @@ fn drain_stderr(mut stderr: std::process::ChildStderr, captured: Arc<Mutex<Strin
         match stderr.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                let chunk = String::from_utf8_lossy(&buf[..n]);
+                for line in chunk.lines() {
+                    crate::liblog::liblog(format!("soloist err: {line}"));
+                }
                 let mut text = captured.lock().unwrap();
                 if text.len() > 8192 {
                     let drop = text.len() - 8192;
                     text.drain(..drop);
                 }
-                text.push_str(&String::from_utf8_lossy(&buf[..n]));
+                text.push_str(&chunk);
             }
             Err(_) => break,
         }
