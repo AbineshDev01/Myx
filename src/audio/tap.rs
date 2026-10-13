@@ -32,8 +32,8 @@ use crate::audio::equalizer::{EqualizerControl, EqualizerSink};
 /// is built around, so the captured packets need no resampling.
 const RATE: u32 = 44_100;
 const CHANNELS: u32 = 2;
-/// Bytes per read — a whole number of 4-byte stereo S16 frames (1024 frames ≈ 23 ms).
-const READ_BYTES: usize = 4 * 1024;
+/// Bytes per read — a whole number of 4-byte stereo S16 frames (256 frames ≈ 5.8 ms).
+const READ_BYTES: usize = 4 * 256;
 /// How long the output backend may take to come up before we give
 /// up on it.
 const START_TIMEOUT: Duration = Duration::from_secs(5);
@@ -49,6 +49,7 @@ pub struct AudioTap {
     module: Option<u32>,
     capture: Option<Child>,
     stop: Arc<AtomicBool>,
+    clear: Arc<AtomicBool>,
     pump: Option<JoinHandle<()>>,
 }
 
@@ -106,12 +107,14 @@ impl AudioTap {
 
         let equalizer = chain.into_parts();
         let stop = Arc::new(AtomicBool::new(false));
+        let clear = Arc::new(AtomicBool::new(false));
         let (ready_tx, ready_rx) = mpsc::channel();
         let pump = match thread::Builder::new()
             .name("myx-soloist-tap".to_string())
             .spawn({
                 let stop = Arc::clone(&stop);
-                move || pump(stdout, equalizer, stop, ready_tx)
+                let clear = Arc::clone(&clear);
+                move || pump(stdout, equalizer, stop, clear, ready_tx)
             }) {
             Ok(handle) => handle,
             Err(e) => {
@@ -131,6 +134,7 @@ impl AudioTap {
                 module: Some(module),
                 capture: Some(capture),
                 stop,
+                clear,
                 pump: Some(pump),
             }),
             Ok(Err(e)) => {
@@ -149,6 +153,11 @@ impl AudioTap {
     /// The virtual sink's name — where Soloist must play.
     pub fn sink_name(&self) -> &str {
         &self.sink
+    }
+
+    /// Clear buffered audio immediately so transport actions respond in real time.
+    pub fn clear(&self) {
+        self.clear.store(true, Ordering::Relaxed);
     }
 }
 
@@ -180,6 +189,7 @@ fn pump(
     mut stdout: ChildStdout,
     equalizer: EqualizerControl,
     stop: Arc<AtomicBool>,
+    clear: Arc<AtomicBool>,
     ready: mpsc::Sender<Result<(), String>>,
 ) {
     let real = match RodioSink::new() {
@@ -205,6 +215,10 @@ fn pump(
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
+        }
+        if clear.swap(false, Ordering::Relaxed) {
+            carry.clear();
+            let _ = sink.clear();
         }
         let n = match stdout.read(&mut bytes) {
             Ok(0) | Err(_) => break, // parec exited or the pipe broke

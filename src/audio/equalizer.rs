@@ -299,6 +299,11 @@ impl Sink for EqualizerSink {
         self.inner.stop()
     }
 
+    fn clear(&mut self) -> SinkResult<()> {
+        self.filters.reset_states();
+        self.inner.clear()
+    }
+
     fn write(&mut self, mut packet: AudioPacket) -> SinkResult<()> {
         self.refresh_settings();
         let AudioPacket::Samples(samples) = &mut packet;

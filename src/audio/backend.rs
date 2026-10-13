@@ -35,14 +35,16 @@ pub trait Sink {
     fn start(&mut self) -> SinkResult<()>;
     fn stop(&mut self) -> SinkResult<()>;
     fn write(&mut self, packet: AudioPacket) -> SinkResult<()>;
+    fn clear(&mut self) -> SinkResult<()> {
+        Ok(())
+    }
 }
 
-/// How much decoded audio may wait in the [`RodioSink`] buffer. Four
-/// seconds of stereo at 44.1 kHz is plenty for a hiccup, and bounding
-/// it is what lets a slow device push backpressure up to Soloist
-/// instead of growing without limit.
-const BUFFER_SECS: u32 = 4;
-const MAX_SAMPLES: usize = 44_100 * 2 * BUFFER_SECS as usize;
+/// How much decoded audio may wait in the [`RodioSink`] buffer.
+/// Kept small (~50ms) so that playback, seek, volume, and pause actions
+/// take effect without perceptible latency.
+const BUFFER_MILLIS: usize = 50;
+const MAX_SAMPLES: usize = 44_100 * 2 * BUFFER_MILLIS / 1000;
 
 /// The speaker. Wraps rodio behind the [`Sink`] trait so the rest of
 /// the chain stays output-agnostic.
@@ -131,11 +133,23 @@ impl RodioSink {
             _stream: stream,
         })
     }
+
+    /// Clear all buffered samples immediately.
+    pub fn clear(&mut self) {
+        let mut queue = self.shared.queue.lock().unwrap();
+        queue.clear();
+        self.shared.not_full.notify_all();
+    }
 }
 
 impl Sink for RodioSink {
     fn start(&mut self) -> SinkResult<()> {
         self.sink.play();
+        Ok(())
+    }
+
+    fn clear(&mut self) -> SinkResult<()> {
+        self.clear();
         Ok(())
     }
 

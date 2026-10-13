@@ -170,6 +170,13 @@ impl SoloistProcess {
         matches!(self.kind, Kind::External)
     }
 
+    /// Clear the loopback tap's audio buffer immediately if active.
+    pub fn clear_tap(&self) {
+        if let Some(tap) = &self._tap {
+            tap.clear();
+        }
+    }
+
     /// Shut down Soloist. Only the instance Myx started is
     /// terminated; an independently started Soloist is left
     /// running. Tries a graceful `SIGTERM` first, then a
