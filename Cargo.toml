@@ -29,6 +29,7 @@ color-thief = "0.2"
 # process management.
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 flume = { version = "0.12", optional = true }
+rustfft = { version = "6", optional = true }
 reqwest = { version = "0.13", optional = true, default-features = false, features = ["blocking", "json", "native-tls"] }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring"] }
 base64 = { version = "0.22", optional = true }
@@ -68,6 +69,7 @@ mxc = ["dep:serde", "dep:serde_json"]
 streaming = [
     "dep:tokio",
     "dep:flume",
+    "dep:rustfft",
     "dep:reqwest",
     "dep:rustls",
     "dep:base64",

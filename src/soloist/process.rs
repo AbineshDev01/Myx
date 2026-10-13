@@ -45,6 +45,7 @@ pub struct StartOptions {
     /// `STATE_DIRECTORY` for the child).
     pub data_dir: Option<PathBuf>,
     pub equalizer: EqualizerControl,
+    pub bands: Arc<Mutex<crate::audio::VisBands>>,
 }
 
 enum Kind {
@@ -100,7 +101,7 @@ impl SoloistProcess {
 
         // The loopback sink, when audio routing is enabled.
         let tap = if opts.route_audio {
-            let chain = crate::audio::SinkChain::new(opts.equalizer.clone());
+            let chain = crate::audio::SinkChain::new(opts.bands.clone(), opts.equalizer.clone());
             match AudioTap::start(chain) {
                 Ok(tap) => Some(tap),
                 Err(err) => {

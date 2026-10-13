@@ -5,22 +5,22 @@
 //! to open is the one named after the thing on screen.
 
 mod equalizer;
-mod fluid_visualizer;
 mod footer;
 mod library;
 mod lyrics;
 mod nowplaying;
 mod overlay;
 mod queue;
+mod visualizer;
 
 pub(crate) use equalizer::*;
-pub(crate) use fluid_visualizer::*;
 pub(crate) use footer::*;
 pub(crate) use library::*;
 pub(crate) use lyrics::*;
 pub(crate) use nowplaying::*;
 pub(crate) use overlay::*;
 pub(crate) use queue::*;
+pub(crate) use visualizer::*;
 
 use crate::*;
 

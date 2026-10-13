@@ -1,47 +1,61 @@
-//! Low-latency audio observer and waveform analyzer.
+//! Audio visualizer sink and spectrum analyzer.
 //!
-//! Captures PCM from the PipeWire output sink without interfering with playback
-//! or adding latency, analyzes waveform oscillations and band energy, and emits
-//! snapshots for the liquid fluid visualizer.
+//! Provides the FFT spectrum analyzer that powers the spectrum bars under
+//! the album art. Supports two paths to ensure full Soloist playback coverage:
+//! 1. `run_pipewire_observer`: Captures the audio sink via PipeWire with zero
+//!    latency when Soloist plays directly to the system audio output.
+//! 2. `VisualizationSink`: A tee'd sink used by `AudioTap` when loopback
+//!    routing (`route_audio: true`) is enabled.
+//!
+//! Both paths write frequency bands into a shared `Arc<Mutex<VisBands>>`.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use rustfft::{num_complex::Complex, FftPlanner};
 use tokio::sync::watch;
 
-/// Downsampled waveform points sent to the fluid visualizer per snapshot.
-pub const WAVEFORM_POINTS: usize = 128;
-/// Recent PCM samples retained for waveform downsampling.
-pub const PCM_WINDOW_SIZE: usize = 1024;
-/// Update cadence in audio frames (~10.6ms at 48kHz).
-pub const EMIT_INTERVAL_FRAMES: usize = 512;
+use crate::audio::backend::{AudioPacket, Sink, SinkResult};
 
-/// A point-in-time audio waveform and energy snapshot.
-#[derive(Debug, Clone)]
-pub struct AudioWaveSnapshot {
-    /// Normalized waveform samples in range [-1.0, 1.0].
-    pub waveform: Vec<f32>,
-    /// Smoothed low-frequency / bass energy in range [0.0, 1.0].
-    pub bass_energy: f32,
-    /// Smoothed high-frequency / transient energy in range [0.0, 1.0].
-    pub treble_energy: f32,
-    /// Overall Root-Mean-Square energy in range [0.0, 1.0].
-    pub rms: f32,
-    /// Instantaneous peak sample value in range [0.0, 1.0].
-    pub peak: f32,
-    /// Whether audio is actively playing (above noise gate floor).
+pub const FFT_SIZE: usize = 1024;
+/// New samples consumed per FFT frame (overlap = FFT_SIZE - HOP_SIZE).
+pub const HOP_SIZE: usize = 128;
+pub const NUM_BANDS: usize = 128;
+
+/// Per-frame decay for individual bands — snappy but not jittery.
+pub const DECAY_FACTOR: f32 = 0.985;
+/// Slower decay for the normalization envelope so quiet passages read quiet.
+pub const DECAY_FACTOR_PEAK: f32 = 0.9985;
+
+/// Shared frequency-band state written by the audio sink/observer, read by the renderer.
+#[derive(Clone, Debug)]
+pub struct VisBands {
+    pub values: [f32; NUM_BANDS],
+    pub updated_at: Instant,
+    pub peak_envelope: f32,
     pub is_active: bool,
 }
 
-impl Default for AudioWaveSnapshot {
-    fn default() -> Self {
+impl VisBands {
+    pub fn new() -> Self {
         Self {
-            waveform: vec![0.0; WAVEFORM_POINTS],
-            bass_energy: 0.0,
-            treble_energy: 0.0,
-            rms: 0.0,
-            peak: 0.0,
+            values: [0.0; NUM_BANDS],
+            updated_at: Instant::now(),
+            peak_envelope: 1e-6,
             is_active: false,
         }
+    }
+
+    pub fn shared() -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self::new()))
+    }
+}
+
+impl Default for VisBands {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -56,31 +70,18 @@ pub enum VisualizerStatus {
 
 /// Handle to the background audio visualizer observer.
 pub struct VisualizerHandle {
-    pub snapshot_rx: watch::Receiver<AudioWaveSnapshot>,
     pub status_rx: watch::Receiver<VisualizerStatus>,
     stop: Arc<AtomicBool>,
 }
 
 impl VisualizerHandle {
     pub fn new_disabled(reason: impl Into<String>) -> Self {
-        let (snapshot_tx, snapshot_rx) = watch::channel(AudioWaveSnapshot::default());
-        let (status_tx, status_rx) =
+        let (_, status_rx) =
             watch::channel(VisualizerStatus::Disabled(reason.into()));
-        let _ = snapshot_tx;
-        let _ = status_tx;
         Self {
-            snapshot_rx,
             status_rx,
             stop: Arc::new(AtomicBool::new(true)),
         }
-    }
-
-    pub fn latest_snapshot(&self) -> AudioWaveSnapshot {
-        self.snapshot_rx.borrow().clone()
-    }
-
-    pub fn is_active(&self) -> bool {
-        self.snapshot_rx.borrow().is_active
     }
 
     pub fn status(&self) -> VisualizerStatus {
@@ -94,86 +95,187 @@ impl Drop for VisualizerHandle {
     }
 }
 
-/// PCM analyzer that filters audio and extracts waveform + frequency envelopes.
-pub struct WaveAnalyzer {
+/// Core FFT and logarithmic band analyzer that writes into `VisBands`.
+pub struct FftProcessor {
+    sample_buf: VecDeque<f32>,
+    bands: Arc<Mutex<VisBands>>,
+    fft: Arc<dyn rustfft::Fft<f32>>,
+    hann_window: Vec<f32>,
+    fft_buf: Vec<Complex<f32>>,
+    magnitudes: Vec<f32>,
+    pub sample_rate: f32,
+    band_ranges: Vec<(usize, usize)>,
+    new_bands: [f32; NUM_BANDS],
+    smooth_scratch: [f32; NUM_BANDS],
     pub sensitivity: f32,
+}
+
+impl FftProcessor {
+    pub fn new(bands: Arc<Mutex<VisBands>>, sample_rate: f32, sensitivity: f32) -> Self {
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(FFT_SIZE);
+        let hann_window: Vec<f32> = (0..FFT_SIZE)
+            .map(|i| {
+                0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (FFT_SIZE - 1) as f32).cos())
+            })
+            .collect();
+        let band_ranges = precompute_band_ranges(FFT_SIZE / 2, NUM_BANDS);
+        Self {
+            sample_buf: VecDeque::with_capacity(FFT_SIZE * 2),
+            bands,
+            fft,
+            hann_window,
+            fft_buf: vec![Complex::new(0.0, 0.0); FFT_SIZE],
+            magnitudes: vec![0.0; FFT_SIZE / 2],
+            sample_rate: sample_rate.max(8000.0),
+            band_ranges,
+            new_bands: [0.0; NUM_BANDS],
+            smooth_scratch: [0.0; NUM_BANDS],
+            sensitivity: sensitivity.clamp(0.1, 5.0),
+        }
+    }
+
+    pub fn process_mono_samples(&mut self, samples: &[f32]) {
+        self.sample_buf.extend(samples.iter().copied());
+
+        while self.sample_buf.len() >= FFT_SIZE {
+            {
+                let (front, back) = self.sample_buf.as_slices();
+                if front.len() >= FFT_SIZE {
+                    for (dst, (&s, &w)) in self
+                        .fft_buf
+                        .iter_mut()
+                        .zip(front.iter().zip(self.hann_window.iter()))
+                    {
+                        *dst = Complex::new(s * w * self.sensitivity, 0.0);
+                    }
+                } else {
+                    let split = front.len();
+                    for (dst, (&s, &w)) in self.fft_buf[..split]
+                        .iter_mut()
+                        .zip(front.iter().zip(self.hann_window[..split].iter()))
+                    {
+                        *dst = Complex::new(s * w * self.sensitivity, 0.0);
+                    }
+                    let remaining = FFT_SIZE - split;
+                    for (dst, (&s, &w)) in self.fft_buf[split..].iter_mut().zip(
+                        back[..remaining]
+                            .iter()
+                            .zip(self.hann_window[split..].iter()),
+                    ) {
+                        *dst = Complex::new(s * w * self.sensitivity, 0.0);
+                    }
+                }
+            }
+
+            self.fft.process(&mut self.fft_buf);
+
+            for (mag, c) in self.magnitudes.iter_mut().zip(self.fft_buf.iter()) {
+                *mag = c.norm();
+            }
+
+            fill_log_bands(&self.magnitudes, &self.band_ranges, &mut self.new_bands);
+            smooth_bands(&mut self.new_bands, &mut self.smooth_scratch);
+
+            let frame_peak = self.new_bands.iter().copied().fold(0.0_f32, f32::max);
+            let active_frame = frame_peak > 0.002;
+
+            if let Ok(mut g) = self.bands.lock() {
+                let elapsed = g.updated_at.elapsed();
+                let elapsed_hops = elapsed.as_secs_f32() * self.sample_rate / HOP_SIZE as f32;
+                let decay = DECAY_FACTOR.powf(elapsed_hops.max(0.1));
+                let peak_decay = DECAY_FACTOR_PEAK.powf(elapsed_hops.max(0.1));
+                for (stored, fresh) in g.values.iter_mut().zip(self.new_bands.iter()) {
+                    *stored = (*stored * decay).max(*fresh);
+                }
+                g.peak_envelope = (g.peak_envelope * peak_decay).max(frame_peak);
+                g.updated_at = Instant::now();
+                if active_frame {
+                    g.is_active = true;
+                } else if g.values.iter().all(|&v| v < 0.004) {
+                    g.is_active = false;
+                }
+            }
+
+            self.sample_buf.drain(..HOP_SIZE);
+        }
+    }
+
+    pub fn stop(&mut self) {
+        if let Ok(mut g) = self.bands.lock() {
+            g.values.fill(0.0);
+            g.peak_envelope = 1e-6;
+            g.updated_at = Instant::now();
+            g.is_active = false;
+        }
+        self.sample_buf.clear();
+    }
+}
+
+/// A tee'd sink for `AudioTap`: forwards audio to `inner` and computes FFT bands on the side.
+pub struct VisualizationSink {
+    inner: Box<dyn Sink>,
+    fft: FftProcessor,
+}
+
+impl VisualizationSink {
+    pub fn new(inner: Box<dyn Sink>, bands: Arc<Mutex<VisBands>>, sample_rate: f32) -> Self {
+        Self {
+            inner,
+            fft: FftProcessor::new(bands, sample_rate, 1.0),
+        }
+    }
+}
+
+impl Sink for VisualizationSink {
+    fn start(&mut self) -> SinkResult<()> {
+        self.inner.start()
+    }
+
+    fn stop(&mut self) -> SinkResult<()> {
+        self.fft.stop();
+        self.inner.stop()
+    }
+
+    fn write(&mut self, packet: AudioPacket) -> SinkResult<()> {
+        let AudioPacket::Samples(ref samples) = packet;
+        let mono: Vec<f32> = samples
+            .chunks(2)
+            .map(|c| {
+                if c.len() == 2 {
+                    f64::midpoint(c[0], c[1]) as f32
+                } else {
+                    c[0] as f32
+                }
+            })
+            .collect();
+        self.fft.process_mono_samples(&mono);
+        self.inner.write(packet)
+    }
+}
+
+/// PCM analyzer that bridges PipeWire audio streams into the FFT analyzer.
+pub struct WaveAnalyzer {
     pub rate: u32,
     pub channels: u32,
-    buffer: Vec<f32>,
-    bass_filter_state: f32,
-    prev_sample: f32,
-    bass_accum: f32,
-    treble_accum: f32,
-    energy_accum: f32,
-    peak_accum: f32,
-    sample_count: usize,
-    smoothed_bass: f32,
-    smoothed_treble: f32,
-    snapshot_tx: watch::Sender<AudioWaveSnapshot>,
+    pub fft_processor: FftProcessor,
     status_tx: watch::Sender<VisualizerStatus>,
 }
 
 impl WaveAnalyzer {
     pub fn new(
+        bands: Arc<Mutex<VisBands>>,
         sensitivity: f32,
-        snapshot_tx: watch::Sender<AudioWaveSnapshot>,
         status_tx: watch::Sender<VisualizerStatus>,
     ) -> Self {
         Self {
-            sensitivity: sensitivity.clamp(0.1, 5.0),
             rate: 48_000,
             channels: 2,
-            buffer: Vec::with_capacity(PCM_WINDOW_SIZE * 2),
-            bass_filter_state: 0.0,
-            prev_sample: 0.0,
-            bass_accum: 0.0,
-            treble_accum: 0.0,
-            energy_accum: 0.0,
-            peak_accum: 0.0,
-            sample_count: 0,
-            smoothed_bass: 0.0,
-            smoothed_treble: 0.0,
-            snapshot_tx,
+            fft_processor: FftProcessor::new(bands, 48_000.0, sensitivity),
             status_tx,
         }
     }
 
-    /// Process a block of mono samples.
-    pub fn process_mono_samples(&mut self, samples: &[f32]) {
-        let alpha = (2.0 * std::f32::consts::PI * 180.0 / (self.rate as f32).max(8000.0)).clamp(0.001, 0.5);
-
-        for &s in samples {
-            self.buffer.push(s);
-            let abs_s = s.abs();
-            if abs_s > self.peak_accum {
-                self.peak_accum = abs_s;
-            }
-            self.energy_accum += s * s;
-
-            // Low-pass filter for bass energy (~180Hz)
-            self.bass_filter_state += alpha * (s - self.bass_filter_state);
-            self.bass_accum += self.bass_filter_state * self.bass_filter_state;
-
-            // High frequency / transient difference
-            let diff = (s - self.prev_sample).abs();
-            self.treble_accum += diff;
-            self.prev_sample = s;
-
-            self.sample_count += 1;
-            if self.sample_count >= EMIT_INTERVAL_FRAMES {
-                self.emit_snapshot();
-            }
-        }
-
-        // Maintain sliding buffer
-        if self.buffer.len() > PCM_WINDOW_SIZE * 2 {
-            let keep = PCM_WINDOW_SIZE;
-            let drop = self.buffer.len() - keep;
-            self.buffer.drain(..drop);
-        }
-    }
-
-    /// Consume interleaved raw bytes (F32LE).
     pub fn consume_bytes(&mut self, bytes: &[u8]) {
         let frame_size = std::mem::size_of::<f32>() * self.channels as usize;
         if frame_size == 0 || bytes.len() < frame_size {
@@ -199,87 +301,23 @@ impl WaveAnalyzer {
             mono.push(sum / ch as f32);
         }
 
-        self.process_mono_samples(&mono);
-    }
-
-    fn emit_snapshot(&mut self) {
-        let n = self.sample_count.max(1) as f32;
-        let rms = (self.energy_accum / n).sqrt();
-        let bass_rms = (self.bass_accum / n).sqrt();
-        let treble_avg = self.treble_accum / n;
-        let peak = self.peak_accum;
-
-        // Reset accumulators
-        self.sample_count = 0;
-        self.energy_accum = 0.0;
-        self.bass_accum = 0.0;
-        self.treble_accum = 0.0;
-        self.peak_accum = 0.0;
-
-        // Noise gate floor
-        let is_active = peak > 0.0035 && rms > 0.0015;
-
-        // Map bass & treble to 0..1 range with sensitivity
-        let target_bass = (bass_rms * 4.5 * self.sensitivity).clamp(0.0, 1.0);
-        let target_treble = (treble_avg * 6.0 * self.sensitivity).clamp(0.0, 1.0);
-
-        // Smooth with attack/release dynamics
-        let bass_attack = 0.65;
-        let bass_release = 0.18;
-        self.smoothed_bass = if target_bass > self.smoothed_bass {
-            self.smoothed_bass + (target_bass - self.smoothed_bass) * bass_attack
-        } else {
-            self.smoothed_bass + (target_bass - self.smoothed_bass) * bass_release
-        };
-
-        let treble_attack = 0.70;
-        let treble_release = 0.25;
-        self.smoothed_treble = if target_treble > self.smoothed_treble {
-            self.smoothed_treble + (target_treble - self.smoothed_treble) * treble_attack
-        } else {
-            self.smoothed_treble + (target_treble - self.smoothed_treble) * treble_release
-        };
-
-        // Extract downsampled waveform window
-        let mut waveform = vec![0.0f32; WAVEFORM_POINTS];
-        if is_active && !self.buffer.is_empty() {
-            let window_len = self.buffer.len().min(PCM_WINDOW_SIZE);
-            let start = self.buffer.len() - window_len;
-            let slice = &self.buffer[start..];
-
-            let chunk_size = (slice.len() as f32 / WAVEFORM_POINTS as f32).max(1.0);
-            for (i, slot) in waveform.iter_mut().enumerate() {
-                let c_start = (i as f32 * chunk_size) as usize;
-                let c_end = (((i + 1) as f32 * chunk_size) as usize).min(slice.len()).max(c_start + 1);
-                let chunk = &slice[c_start..c_end];
-                let avg = chunk.iter().sum::<f32>() / chunk.len() as f32;
-                *slot = (avg * self.sensitivity).clamp(-1.0, 1.0);
-            }
-        }
-
-        let snapshot = AudioWaveSnapshot {
-            waveform,
-            bass_energy: if is_active { self.smoothed_bass } else { 0.0 },
-            treble_energy: if is_active { self.smoothed_treble } else { 0.0 },
-            rms: if is_active { (rms * self.sensitivity).clamp(0.0, 1.0) } else { 0.0 },
-            peak: if is_active { (peak * self.sensitivity).clamp(0.0, 1.0) } else { 0.0 },
-            is_active,
-        };
-
-        let _ = self.snapshot_tx.send_replace(snapshot);
+        self.fft_processor.process_mono_samples(&mono);
     }
 }
 
-/// Spawn the audio observer.
-pub fn spawn(enabled: bool, sensitivity: f32, target: String) -> VisualizerHandle {
-    let (snapshot_tx, snapshot_rx) = watch::channel(AudioWaveSnapshot::default());
+/// Spawn the audio observer on a background thread.
+pub fn spawn(
+    enabled: bool,
+    sensitivity: f32,
+    target: String,
+    bands: Arc<Mutex<VisBands>>,
+) -> VisualizerHandle {
     let (status_tx, status_rx) = watch::channel(VisualizerStatus::Starting);
     let stop = Arc::new(AtomicBool::new(false));
 
     if !enabled {
         let _ = status_tx.send_replace(VisualizerStatus::Disabled("disabled in config".into()));
         return VisualizerHandle {
-            snapshot_rx,
             status_rx,
             stop,
         };
@@ -292,7 +330,7 @@ pub fn spawn(enabled: bool, sensitivity: f32, target: String) -> VisualizerHandl
         let thread_res = std::thread::Builder::new()
             .name("myx-visualizer".into())
             .spawn(move || {
-                run_pipewire_observer(sensitivity, target_clone, snapshot_tx, status_tx, stop_clone);
+                run_pipewire_observer(sensitivity, target_clone, bands, status_tx, stop_clone);
             });
 
         if let Err(e) = thread_res {
@@ -304,13 +342,13 @@ pub fn spawn(enabled: bool, sensitivity: f32, target: String) -> VisualizerHandl
     {
         let _ = target;
         let _ = sensitivity;
+        let _ = bands;
         let _ = status_tx.send_replace(VisualizerStatus::Unavailable(
             "pipewire observer requires linux with streaming feature".into(),
         ));
     }
 
     VisualizerHandle {
-        snapshot_rx,
         status_rx,
         stop,
     }
@@ -320,11 +358,11 @@ pub fn spawn(enabled: bool, sensitivity: f32, target: String) -> VisualizerHandl
 fn run_pipewire_observer(
     sensitivity: f32,
     target: String,
-    snapshot_tx: watch::Sender<AudioWaveSnapshot>,
+    bands: Arc<Mutex<VisBands>>,
     status_tx: watch::Sender<VisualizerStatus>,
     stop: Arc<AtomicBool>,
 ) {
-    if let Err(err) = run_pipewire_inner(sensitivity, target, &snapshot_tx, &status_tx, &stop) {
+    if let Err(err) = run_pipewire_inner(sensitivity, target, bands, &status_tx, &stop) {
         log::debug!("visualizer pipewire observer: {err}");
         let _ = status_tx.send_replace(VisualizerStatus::Unavailable(err.to_string()));
     }
@@ -334,7 +372,7 @@ fn run_pipewire_observer(
 fn run_pipewire_inner(
     sensitivity: f32,
     target: String,
-    snapshot_tx: &watch::Sender<AudioWaveSnapshot>,
+    bands: Arc<Mutex<VisBands>>,
     status_tx: &watch::Sender<VisualizerStatus>,
     _stop: &Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -360,9 +398,9 @@ fn run_pipewire_inner(
         props.insert("target.object", target.clone());
     }
 
-    let stream = pw::stream::StreamRc::new(core, "myx-fluid-visualizer", props)?;
+    let stream = pw::stream::StreamRc::new(core, "myx-visualizer", props)?;
 
-    let analyzer = WaveAnalyzer::new(sensitivity, snapshot_tx.clone(), status_tx.clone());
+    let analyzer = WaveAnalyzer::new(bands, sensitivity, status_tx.clone());
     let _listener = stream
         .add_local_listener_with_user_data(analyzer)
         .param_changed(|_, user_data, id, param| {
@@ -386,6 +424,7 @@ fn run_pipewire_inner(
             let (rate, channels) = (info.rate(), info.channels().max(1));
             user_data.rate = rate;
             user_data.channels = channels;
+            user_data.fft_processor.sample_rate = rate as f32;
             let _ = user_data.status_tx.send_replace(VisualizerStatus::Running);
         })
         .process(|stream, user_data| match stream.dequeue_buffer() {
@@ -434,35 +473,72 @@ fn run_pipewire_inner(
     Ok(())
 }
 
+fn precompute_band_ranges(num_bins: usize, num_bands: usize) -> Vec<(usize, usize)> {
+    let log_min = 1.0_f64;
+    let log_max = num_bins as f64;
+    let mut used_up_to: usize = 1;
+    let mut ranges = Vec::with_capacity(num_bands);
+    for band in 0..num_bands {
+        if used_up_to >= num_bins {
+            ranges.push((num_bins - 1, num_bins));
+            continue;
+        }
+        let t_start = band as f64 / num_bands as f64;
+        let t_end = (band + 1) as f64 / num_bands as f64;
+        let natural_start = (log_min * (log_max / log_min).powf(t_start)) as usize;
+        let natural_end = (log_min * (log_max / log_min).powf(t_end)) as usize;
+        let start = natural_start.max(used_up_to).min(num_bins - 1);
+        let end = natural_end.max(start + 1).min(num_bins);
+        used_up_to = end;
+        ranges.push((start, end));
+    }
+    ranges
+}
+
+fn fill_log_bands(magnitudes: &[f32], band_ranges: &[(usize, usize)], out: &mut [f32]) {
+    for (band_val, &(start, end)) in out.iter_mut().zip(band_ranges.iter()) {
+        let len = (end - start) as f32;
+        let sum_sq: f32 = magnitudes[start..end].iter().map(|&v| v * v).sum();
+        *band_val = (sum_sq / len).sqrt();
+    }
+}
+
+fn smooth_bands(bands: &mut [f32], scratch: &mut [f32]) {
+    let n = bands.len();
+    if n < 3 {
+        return;
+    }
+    scratch[..n].copy_from_slice(&bands[..n]);
+    for i in 0..n {
+        let prev = scratch[if i > 0 { i - 1 } else { 0 }];
+        let next = scratch[if i + 1 < n { i + 1 } else { n - 1 }];
+        bands[i] = prev * 0.25 + scratch[i] * 0.5 + next * 0.25;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn wave_analyzer_detects_silence_and_active_signal() {
-        let (snap_tx, snap_rx) = watch::channel(AudioWaveSnapshot::default());
-        let (stat_tx, _stat_rx) = watch::channel(VisualizerStatus::Starting);
-        let mut analyzer = WaveAnalyzer::new(1.0, snap_tx, stat_tx);
-
-        // Feed silence
-        let silence = vec![0.0f32; EMIT_INTERVAL_FRAMES];
-        analyzer.process_mono_samples(&silence);
-        let s0 = snap_rx.borrow().clone();
-        assert!(!s0.is_active);
-        assert_eq!(s0.bass_energy, 0.0);
-        assert_eq!(s0.rms, 0.0);
-
-        // Feed 100Hz sine wave (bass excitation)
-        let mut sine = Vec::with_capacity(EMIT_INTERVAL_FRAMES);
-        for i in 0..EMIT_INTERVAL_FRAMES {
-            let t = i as f32 / 48000.0;
-            sine.push((2.0 * std::f32::consts::PI * 100.0 * t).sin() * 0.7);
+    fn precompute_band_ranges_valid() {
+        let ranges = precompute_band_ranges(512, NUM_BANDS);
+        assert_eq!(ranges.len(), NUM_BANDS);
+        for &(start, end) in &ranges {
+            assert!(start < end);
+            assert!(end <= 512);
         }
-        analyzer.process_mono_samples(&sine);
-        let s1 = snap_rx.borrow().clone();
-        assert!(s1.is_active);
-        assert!(s1.rms > 0.2);
-        assert!(s1.bass_energy > 0.1);
-        assert_eq!(s1.waveform.len(), WAVEFORM_POINTS);
+    }
+
+    #[test]
+    fn fft_processor_processes_samples_and_decays() {
+        let bands = VisBands::shared();
+        let mut proc = FftProcessor::new(Arc::clone(&bands), 44100.0, 1.0);
+        let samples = vec![0.5f32; 2048];
+        proc.process_mono_samples(&samples);
+
+        let g = bands.lock().unwrap();
+        assert!(g.is_active);
+        assert!(g.peak_envelope > 0.0);
     }
 }

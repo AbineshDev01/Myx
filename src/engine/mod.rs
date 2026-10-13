@@ -62,6 +62,7 @@ pub enum EngineEvent {
 
 /// A running playback engine backed by Soloist.
 pub struct Engine {
+    pub bands: Arc<Mutex<crate::audio::VisBands>>,
     equalizer: EqualizerControl,
     /// Handle for sending commands to Soloist.
     client: ClientHandle,
@@ -130,6 +131,7 @@ impl Engine {
     /// is bounded, and the event bridge keeps running
     /// (reconnecting) in the background.
     pub async fn run(tx: Sender<EngineEvent>, opts: BootOptions) -> Result<Self> {
+        let bands = Arc::new(Mutex::new(crate::audio::VisBands::default()));
         let equalizer = crate::audio::shared_equalizer();
         let volume = opts.volume;
 
@@ -143,6 +145,7 @@ impl Engine {
             route_audio: opts.route_audio,
             data_dir: opts.data_dir,
             equalizer: Arc::clone(&equalizer),
+            bands: Arc::clone(&bands),
         })
         .await
         .context("starting the Soloist playback backend")?;
@@ -181,11 +184,17 @@ impl Engine {
         client.send(Command::set_volume(volume));
 
         Ok(Self {
+            bands,
             equalizer,
             client,
             snapshot,
             process,
         })
+    }
+
+    /// The live spectrum, shared with the visualizer sink.
+    pub fn bands(&self) -> Arc<Mutex<crate::audio::VisBands>> {
+        Arc::clone(&self.bands)
     }
 
     /// Replace the equalizer curve. Takes effect on the

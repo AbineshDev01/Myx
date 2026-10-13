@@ -116,7 +116,7 @@ pub(crate) fn render_nowplaying_view(
                 width: vis_w,
                 height: vis_h,
             };
-            render_fluid_visualizer(f, vis_rect, &app.fluid_sim, theme);
+            render_visualizer(f, app, theme, vis_rect);
         }
     }
 }

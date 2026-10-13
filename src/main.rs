@@ -427,6 +427,7 @@ async fn boot(
         liblog("media controls unavailable; continuing without native integration");
     }
 
+    let bands = engine.bands();
     let app = App {
         svc: Services {
             engine,
@@ -497,8 +498,8 @@ async fn boot(
             myx::config::get().visualizer_enabled,
             myx::config::get().visualizer_sensitivity as f32,
             String::new(),
+            bands,
         )),
-        fluid_sim: ui::FluidSimulation::new(128),
     };
 
     run_ui(terminal, app, ev_rx).await
@@ -635,9 +636,8 @@ async fn run_ui(
                     // Resizes lose inline art. Focus only does so when tmux
                     // repaints a pane; compositor focus-follows-mouse events do
                     // not and must not make the cover flash.
-                    Some(Ok(Event::Resize(w, _))) => {
+                    Some(Ok(Event::Resize(_, _))) => {
                         app.art_repaint = ArtRepaint::Wipe;
-                        app.fluid_sim.resize((w as usize * 2).clamp(32, 256));
                     }
                     Some(Ok(Event::FocusGained)) if in_tmux => {
                         restore_art = true;
@@ -725,22 +725,14 @@ async fn run_ui(
                     }
                 }
 
-                if let Some(vis) = app.visualizer.as_ref() {
-                    let snap = vis.latest_snapshot();
-                    app.fluid_sim.inject_waveform(
-                        &snap,
-                        myx::config::get().visualizer_sensitivity as f32,
-                    );
-                } else {
-                    let snap = myx::audio::AudioWaveSnapshot::default();
-                    app.fluid_sim.inject_waveform(&snap, 1.0);
-                }
-                app.fluid_sim.step(0.016);
-
-                // Synced lyrics and liquid visualizer move at the animation rate.
+                // The visualizer only animates while it is on screen; on Queue
+                // its frame rate buys nothing. Synced lyrics move too — at the
+                // idle rate the highlighted line lands half a second late.
                 let animating = app.theme.fade.is_some()
                     || (app.view.mode == RightView::Lyrics && app.view.lyrics_synced)
-                    || (app.view.mode == RightView::NowPlaying && myx::config::get().visualizer_enabled);
+                    || (app.view.mode == RightView::NowPlaying
+                        && myx::config::get().visualizer_enabled
+                        && app.svc.engine.bands.try_lock().map(|g| g.is_active).unwrap_or(false));
                 if app.art_repaint != ArtRepaint::Idle {
                     dirty = true;
                 }
