@@ -17,8 +17,17 @@ async fn main() -> anyhow::Result<()> {
 
     println!("myx-probe: authenticating…");
     let (tx, rx) = flume::unbounded::<EngineEvent>();
-    let engine = engine::run(engine::credentials()?, tx, 50).await?;
-    println!("myx-probe: Connect device 'myx' is live.");
+    let opts = myx::engine::BootOptions {
+        api_key: std::env::var("SOLOIST_API_KEY").ok(),
+        device_name: "myx-probe".to_string(),
+        executable: "soloist".to_string(),
+        route_audio: false,
+        explicit_ws: std::env::var("MYX_SOLOIST_WS").ok(),
+        data_dir: None,
+        volume: 50,
+    };
+    let engine = engine::run(tx, opts).await?;
+    println!("myx-probe: Connect device is live.");
 
     // If a context URI was passed, start playing it immediately.
     if let Some(uri) = std::env::args().nth(1) {

@@ -1,14 +1,14 @@
 //! Verify the radio path returns similar tracks.
 use myx::engine;
+use myx::webapi::WebApi;
+use std::sync::{Arc, Mutex};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let (tx, _rx) = flume::unbounded();
-    let engine = engine::run(engine::credentials()?, tx, 50).await?;
-    let session = engine.session();
-    let seed = "spotify:track:0VjIjW4GlUZAMYd2vXMi3b";
-    match engine::radio_tracks(&session, seed).await {
+    let webapi = Arc::new(Mutex::new(WebApi::init()?));
+    let seed = "spotify:track:0VjIjW4GlUZAMYd2vXMi3b".to_string();
+    match engine::radio_tracks(webapi, &seed).await {
         Ok(uris) => {
             println!("radio OK: {} tracks", uris.len());
             for u in uris.iter().take(6) {

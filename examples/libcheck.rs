@@ -1,14 +1,13 @@
 //! Diagnostic: check the Web API token + /me/playlists response.
 //!   cargo run --example libcheck
-use myx::engine;
+use myx::webapi::WebApi;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let (tx, _rx) = flume::unbounded();
-    let engine = engine::run(engine::credentials()?, tx, 50).await?;
+    let mut webapi = WebApi::init()?;
 
-    let token = match engine.web_token().await {
+    let token = match webapi.valid_token() {
         Ok(t) => {
             println!(
                 "web_token OK: len={}, head={}…",
