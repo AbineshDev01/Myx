@@ -266,27 +266,30 @@ impl Engine {
         if tracks.is_empty() {
             return Ok(());
         }
+        self.process.clear_tap();
         let start = start_uri
             .filter(|uri| tracks.iter().any(|t| t == uri))
             .unwrap_or_else(|| tracks[0].clone());
 
-        // Queue every track except the one that starts
-        // playback, in order, so the rest of the list
-        // plays through after it.
-        for track in &tracks {
-            if track != &start {
-                self.send(Command::add_to_queue(track.clone()))?;
-            }
-        }
-        self.send(Command::play_uri(start))?;
+        // Play the starting track immediately so playback begins without delay.
+        self.send(Command::play_uri(start.clone()))?;
         if start_position_ms > 0 {
             self.send(Command::seek(start_position_ms as u64))?;
         }
-        self.send(Command::set_shuffle(shuffle))
+        self.send(Command::set_shuffle(shuffle))?;
+
+        // Queue subsequent tracks that follow `start` in order (capped at 50
+        // to avoid flooding the WebSocket and queue with hundreds of items).
+        let start_idx = tracks.iter().position(|t| t == &start).unwrap_or(0);
+        for track in tracks.iter().skip(start_idx + 1).take(50) {
+            self.send(Command::add_to_queue(track.clone()))?;
+        }
+        Ok(())
     }
 
     /// Play a single track at an optional position.
     pub fn play_track_at(&self, uri: String, position_ms: u32) -> Result<()> {
+        self.process.clear_tap();
         self.send(Command::play_uri(uri))?;
         if position_ms > 0 {
             self.send(Command::seek(position_ms as u64))?;
@@ -296,11 +299,14 @@ impl Engine {
 
     /// Resume playback.
     pub fn play(&self) -> Result<()> {
+        self.snapshot.lock().unwrap().playing = true;
         self.send(Command::play())
     }
 
     /// Pause playback.
     pub fn pause(&self) -> Result<()> {
+        self.snapshot.lock().unwrap().playing = false;
+        self.process.clear_tap();
         self.send(Command::pause())
     }
 
@@ -308,8 +314,11 @@ impl Engine {
     /// combined toggle, so the engine reads its running
     /// snapshot and issues the opposite command.
     pub fn toggle(&self) -> Result<()> {
-        let playing = self.snapshot.lock().unwrap().playing;
+        let mut snap = self.snapshot.lock().unwrap();
+        let playing = snap.playing;
+        snap.playing = !playing;
         if playing {
+            self.process.clear_tap();
             self.send(Command::pause())
         } else {
             self.send(Command::play())
@@ -318,11 +327,13 @@ impl Engine {
 
     /// Skip to the next track.
     pub fn next(&self) -> Result<()> {
+        self.process.clear_tap();
         self.send(Command::skip_next())
     }
 
     /// Skip to the previous track.
     pub fn prev(&self) -> Result<()> {
+        self.process.clear_tap();
         self.send(Command::skip_prev())
     }
 
@@ -334,6 +345,8 @@ impl Engine {
     /// therefore pauses Soloist; the now-playing view
     /// stays on the paused track rather than clearing.
     pub fn stop(&self) {
+        self.snapshot.lock().unwrap().playing = false;
+        self.process.clear_tap();
         let _ = self.send(Command::pause());
     }
 
@@ -364,6 +377,7 @@ impl Engine {
 
     /// Seek to a position in the current track.
     pub fn seek(&self, position_ms: u32) -> Result<()> {
+        self.process.clear_tap();
         self.send(Command::seek(position_ms as u64))
     }
 }

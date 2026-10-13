@@ -66,7 +66,7 @@ impl Default for SoloistConfig {
             api_key: None,
             device_name: "myx soloist".to_string(),
             executable: "soloist".to_string(),
-            route_audio: true,
+            route_audio: false,
             ws: None,
             data_dir: None,
         }
