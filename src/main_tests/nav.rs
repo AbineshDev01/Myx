@@ -110,7 +110,7 @@ fn the_loading_screen_names_what_it_is_waiting_on() {
         .collect::<String>();
     assert!(text.contains("connecting to Spotify"), "{text}");
     assert!(text.contains(SPINNER[0]), "spinner missing");
-    assert!(text.contains('\u{FF2D}'), "wordmark missing");
+    assert!(text.contains("SOLOIST TUI"), "wordmark missing");
 }
 
 #[test]

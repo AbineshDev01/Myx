@@ -43,7 +43,7 @@ pub(crate) fn render(f: &mut Frame, app: &App, out: &mut FrameOut, repaint: ArtR
 
     // Header: wordmark + view tabs (right-aligned) + status.
     let mut header: Vec<Span> =
-        gradient_line("soloist-tui", &[theme.primary, theme.accent])
+        gradient_line("SOLOIST TUI", &[theme.primary, theme.accent])
             .into_iter()
             .map(|mut sp| {
                 sp.style = sp.style.add_modifier(Modifier::BOLD);

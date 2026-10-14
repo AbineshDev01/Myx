@@ -71,7 +71,7 @@ pub(crate) fn render_loading(f: &mut Frame, label: &str, frame: usize) {
         height: 1,
     };
 
-    let mark: Vec<Span> = gradient_line("\u{FF2D}\u{FF39}\u{FF38}", &[theme.primary, theme.accent])
+    let mark: Vec<Span> = gradient_line("SOLOIST TUI", &[theme.primary, theme.accent])
         .into_iter()
         .map(|mut sp| {
             sp.style = sp.style.add_modifier(Modifier::BOLD);
