@@ -86,13 +86,28 @@ pub(crate) fn render_nowplaying_view(
             width: top.width,
             height: 3,
         };
-        let lines = vec![
-            Line::from(Span::styled(
-                truncate(&n.title, top.width as usize),
+        let is_liked = app.is_liked(&n.uri);
+        let heart_span = if is_liked {
+            Span::styled(
+                " ♥",
+                Style::default()
+                    .fg(theme.accent.into())
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(" ♡", theme.muted())
+        };
+        let title_line = Line::from(vec![
+            Span::styled(
+                truncate(&n.title, top.width.saturating_sub(2) as usize),
                 Style::default()
                     .fg(theme.text.into())
                     .add_modifier(Modifier::BOLD),
-            )),
+            ),
+            heart_span,
+        ]);
+        let lines = vec![
+            title_line,
             Line::from(Span::styled(
                 truncate(&n.artist, top.width as usize),
                 Style::default().fg(theme.primary.into()),
@@ -130,6 +145,42 @@ pub(crate) fn render_now_strip(
     area: Rect,
 ) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
+
+    // Track metadata on the left of rows[0]
+    if let Some(n) = &app.playback.now {
+        let is_liked = app.is_liked(&n.uri);
+        let avail_w = rows[0].width.saturating_sub(16) as usize;
+        let mut spans = Vec::new();
+        let play_glyph = if n.is_playing { "▶ " } else { "⏸ " };
+        spans.push(Span::styled(play_glyph, Style::default().fg(theme.accent.into())));
+        let title_max = avail_w.saturating_sub(if is_liked { 6 } else { 4 });
+        spans.push(Span::styled(
+            truncate(&n.title, title_max),
+            Style::default().fg(theme.text.into()).add_modifier(Modifier::BOLD),
+        ));
+        if is_liked {
+            spans.push(Span::styled(
+                " ♥",
+                Style::default().fg(theme.accent.into()),
+            ));
+        }
+        let used = n.title.chars().count() + 2 + if is_liked { 2 } else { 0 };
+        let room = avail_w.saturating_sub(used + 3);
+        if room > 3 && !n.artist.is_empty() {
+            spans.push(Span::styled(" · ", theme.muted()));
+            spans.push(Span::styled(
+                truncate(&n.artist, room),
+                Style::default().fg(theme.primary.into()),
+            ));
+        }
+        let info_rect = Rect {
+            x: rows[0].x,
+            y: rows[0].y,
+            width: rows[0].width.saturating_sub(15),
+            height: 1,
+        };
+        f.render_widget(Paragraph::new(Line::from(spans)), info_rect);
+    }
 
     // Volume meter (top row, far right). Still honest in remote mode: +/- goes
     // to the remote device's volume.

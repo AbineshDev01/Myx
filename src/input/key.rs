@@ -181,6 +181,48 @@ pub(crate) fn handle_key(
                 }
             }
         }
+        KeyCode::Char('l') => {
+            let target_track = if app.view.zen {
+                app.playback
+                    .now
+                    .as_ref()
+                    .filter(|n| !n.uri.is_empty())
+                    .map(|n| (n.title.clone(), n.uri.clone()))
+            } else {
+                let sel = app.cur_items().get(app.browse.selected);
+                if let Some(item) = sel.filter(|i| i.is_track()) {
+                    Some((item.name.clone(), item.uri.clone()))
+                } else {
+                    app.playback
+                        .now
+                        .as_ref()
+                        .filter(|n| !n.uri.is_empty())
+                        .map(|n| (n.title.clone(), n.uri.clone()))
+                }
+            };
+            if let Some((name, uri)) = target_track {
+                let id = myx::util::track_id_from_uri(&uri)
+                    .or_else(|| if !uri.is_empty() && !uri.contains(':') { Some(uri.clone()) } else { None });
+                if let Some(id) = id {
+                    let currently_liked = app.is_liked(&uri);
+                    let new_liked = !currently_liked;
+                    app.browse.library.toggle_liked_uri(&uri, new_liked);
+                    app.status = if new_liked {
+                        format!("added {} to Liked ♥", name)
+                    } else {
+                        format!("removed {} from Liked", name)
+                    };
+                    spawn_action(
+                        app.svc.webapi.clone(),
+                        ActionKind::ToggleLike {
+                            id,
+                            saved: currently_liked,
+                        },
+                        chans.astatus.clone(),
+                    );
+                }
+            }
+        }
         // Tab / Shift+Tab (and [ ]) rotate the library sections.
         KeyCode::Tab | KeyCode::Char(']') => {
             app.search.searching = false;

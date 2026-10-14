@@ -77,6 +77,10 @@ impl App {
             self.browse.library.items_mut(self.browse.section)
         }
     }
+    /// Check if a track URI is liked in the user's library.
+    pub(crate) fn is_liked(&self, uri: &str) -> bool {
+        self.browse.library.is_liked_uri(uri)
+    }
     /// First non-header index (where a fresh selection should land).
     pub(crate) fn first_selectable(&self) -> usize {
         self.cur_items()

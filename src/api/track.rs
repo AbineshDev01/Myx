@@ -11,6 +11,7 @@ pub(crate) fn fetch_track_meta(webapi: &Arc<Mutex<WebApi>>, track_id: &str) -> T
         artist: String::new(),
         album: String::new(),
         duration_ms: 0,
+        is_liked: false,
         image: TrackImage {
             image: None,
             url: None,
@@ -30,6 +31,7 @@ pub(crate) fn fetch_track_meta(webapi: &Arc<Mutex<WebApi>>, track_id: &str) -> T
     let album = v["album"]["name"].as_str().unwrap_or("").to_string();
     let duration_ms = v["duration_ms"].as_u64().unwrap_or(0) as u32;
     let cover_url = v["album"]["images"][0]["url"].as_str().map(String::from);
+    let is_liked = actions::api_contains(&token, &uri);
 
     let image = cover_url
         .clone()
@@ -43,6 +45,7 @@ pub(crate) fn fetch_track_meta(webapi: &Arc<Mutex<WebApi>>, track_id: &str) -> T
         artist,
         album,
         duration_ms,
+        is_liked,
         image: TrackImage {
             image,
             url: cover_url,

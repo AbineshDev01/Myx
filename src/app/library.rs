@@ -203,6 +203,7 @@ pub(crate) struct Library {
     pub(crate) liked: Vec<LibItem>,
     pub(crate) albums: Vec<LibItem>,
     pub(crate) artists: Vec<LibItem>,
+    pub(crate) liked_uris: std::collections::HashSet<String>,
     // Sections that have received a delivery since boot / the last refresh.
     // An undelivered section is *loading*, not empty — the UI renders the
     // difference (issue #25). Lives here because `set` is the one delivery
@@ -237,9 +238,66 @@ impl Library {
             Section::Home => self.home = items,
             Section::Recent => self.recent = items,
             Section::Playlists => self.playlists = items,
-            Section::Liked => self.liked = items,
+            Section::Liked => {
+                self.liked_uris = items
+                    .iter()
+                    .filter(|i| i.is_track())
+                    .flat_map(|i| {
+                        let mut v = vec![i.uri.clone()];
+                        if let Some(id) = myx::util::track_id_from_uri(&i.uri) {
+                            v.push(format!("spotify:track:{id}"));
+                            v.push(id);
+                        }
+                        v
+                    })
+                    .collect();
+                self.liked = items;
+            }
             Section::Albums => self.albums = items,
             Section::Artists => self.artists = items,
+        }
+    }
+
+    /// Check if a track URI is in the user's liked library.
+    pub(crate) fn is_liked_uri(&self, uri: &str) -> bool {
+        if uri.is_empty() {
+            return false;
+        }
+        if self.liked_uris.contains(uri) {
+            return true;
+        }
+        if let Some(id) = myx::util::track_id_from_uri(uri) {
+            let full = format!("spotify:track:{id}");
+            if self.liked_uris.contains(&full) || self.liked_uris.contains(&id) {
+                return true;
+            }
+        }
+        self.liked.iter().any(|i| i.is_track() && (i.uri == uri || i.uri.ends_with(uri)))
+    }
+
+    /// Optimistically update the liked state of a track URI.
+    pub(crate) fn toggle_liked_uri(&mut self, uri: &str, saved: bool) {
+        let (full, id_opt) = if let Some(id) = myx::util::track_id_from_uri(uri) {
+            (format!("spotify:track:{id}"), Some(id))
+        } else if uri.starts_with("spotify:track:") {
+            (uri.to_string(), uri.strip_prefix("spotify:track:").map(String::from))
+        } else {
+            (format!("spotify:track:{uri}"), Some(uri.to_string()))
+        };
+
+        if saved {
+            self.liked_uris.insert(full.clone());
+            self.liked_uris.insert(uri.to_string());
+            if let Some(ref id) = id_opt {
+                self.liked_uris.insert(id.clone());
+            }
+        } else {
+            self.liked_uris.remove(&full);
+            self.liked_uris.remove(uri);
+            if let Some(ref id) = id_opt {
+                self.liked_uris.remove(id);
+            }
+            self.liked.retain(|i| !i.is_track() || (i.uri != full && i.uri != uri));
         }
     }
 
@@ -285,5 +343,36 @@ mod loaded_tracking_tests {
         for s in Section::ALL {
             assert!(lib.is_loaded(s));
         }
+    }
+
+    #[test]
+    fn liked_uri_tracking_and_optimistic_toggle() {
+        let mut lib = Library::default();
+        let track_uri = "spotify:track:4cOdK2wGLETKBW3PvgPWqT";
+        let track_id = "4cOdK2wGLETKBW3PvgPWqT";
+        assert!(!lib.is_liked_uri(track_uri));
+        assert!(!lib.is_liked_uri(track_id));
+
+        // Delivery of liked section populates liked_uris
+        lib.set(
+            Section::Liked,
+            vec![LibItem::track(
+                "Never Gonna Give You Up".into(),
+                "Rick Astley".into(),
+                track_uri.into(),
+            )],
+        );
+        assert!(lib.is_liked_uri(track_uri));
+        assert!(lib.is_liked_uri(track_id));
+
+        // Optimistically remove from liked
+        lib.toggle_liked_uri(track_uri, false);
+        assert!(!lib.is_liked_uri(track_uri));
+        assert!(!lib.is_liked_uri(track_id));
+
+        // Optimistically add back to liked
+        lib.toggle_liked_uri(track_id, true);
+        assert!(lib.is_liked_uri(track_uri));
+        assert!(lib.is_liked_uri(track_id));
     }
 }

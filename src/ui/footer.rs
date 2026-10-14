@@ -36,6 +36,7 @@ pub(crate) fn render_footer(f: &mut Frame, app: &App, theme: Theme, area: Rect) 
             lbl(" shuffle   "),
         ),
         (false, key("a"), lbl(" actions   ")),
+        (false, key("l"), lbl(" like   ")),
         (false, key("e"), lbl(" eq   ")),
         (
             false,

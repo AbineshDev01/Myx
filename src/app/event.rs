@@ -181,6 +181,8 @@ pub(crate) fn apply_meta(
         });
     }
 
+    app.browse.library.toggle_liked_uri(&meta.uri, meta.is_liked);
+
     app.playback.now = Some(NowPlaying {
         uri: meta.uri,
         title: meta.title,

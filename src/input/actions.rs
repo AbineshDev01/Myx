@@ -89,6 +89,16 @@ pub(crate) fn handle_action_key(
             };
             app.view.actions = None;
         }
+        ActionKind::ToggleLike { id, saved } => {
+            let track_uri = format!("spotify:track:{id}");
+            app.browse.library.toggle_liked_uri(&track_uri, !saved);
+            spawn_action(
+                app.svc.webapi.clone(),
+                ActionKind::ToggleLike { id, saved },
+                astatus_tx.clone(),
+            );
+            app.view.actions = None;
+        }
         other => {
             spawn_action(app.svc.webapi.clone(), other, astatus_tx.clone());
             app.view.actions = None;

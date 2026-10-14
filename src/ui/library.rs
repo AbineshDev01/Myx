@@ -170,11 +170,14 @@ pub(crate) fn render_library(
         // The currently playing track, wherever it appears in the list (#33).
         let now_here =
             item.is_track() && app.playback.now.as_ref().is_some_and(|n| n.uri == item.uri);
-        let max = if playable_ctx || now_here {
-            max.saturating_sub(2)
-        } else {
-            max
-        };
+        let is_liked = item.is_track() && app.is_liked(&item.uri);
+        let mut max = max;
+        if playable_ctx || now_here {
+            max = max.saturating_sub(2);
+        }
+        if is_liked {
+            max = max.saturating_sub(2);
+        }
         let label = truncate(&item.name, max);
         let mut spans = Vec::new();
         if playable_ctx {
@@ -197,8 +200,14 @@ pub(crate) fn render_library(
             spans.push(Span::styled(" ●", marker_style));
         }
         spans.push(Span::styled(format!(" {label}"), style));
+        if is_liked {
+            spans.push(Span::styled(
+                " ♥",
+                Style::default().fg(theme.accent.into()),
+            ));
+        }
         if !item.subtitle.is_empty() {
-            let used = label.chars().count() + 1;
+            let used = label.chars().count() + 1 + if is_liked { 2 } else { 0 };
             let room = max.saturating_sub(used + 3);
             if room > 3 {
                 spans.push(Span::styled(

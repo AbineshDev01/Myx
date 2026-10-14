@@ -20,6 +20,7 @@ pub(crate) struct TrackMeta {
     pub(crate) artist: String,
     pub(crate) album: String,
     pub(crate) duration_ms: u32,
+    pub(crate) is_liked: bool,
     pub(crate) image: TrackImage,
     pub(crate) theme: Option<Theme>,
 }
