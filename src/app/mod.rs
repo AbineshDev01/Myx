@@ -177,12 +177,6 @@ impl App {
             return Activated::None;
         }
         if item.is_track() {
-            if self.search.searching {
-                // A search-result song starts that song's radio (seed + similar).
-                self.transport.source = PlaySource::Radio(item.uri.clone());
-                self.transport.source_name = format!("Radio · {}", item.name);
-                return Activated::Radio(item.uri);
-            }
             // Inside a drill-in → play its context at this track (real queue).
             if let Some(d) = self.browse.details.last() {
                 let ctx = d.context_uri.clone();
@@ -199,7 +193,7 @@ impl App {
                 }
                 return Activated::None;
             }
-            // Section track list.
+            // Section track list or search results.
             let uris = self
                 .cur_items()
                 .iter()
@@ -207,7 +201,10 @@ impl App {
                 .map(|i| i.uri.clone())
                 .collect();
             self.status = format!("starting {}…", item.name);
-            if self.browse.section == Section::Liked {
+            if self.search.searching {
+                self.transport.source = PlaySource::None;
+                self.transport.source_name = format!("Search · {}", self.search.query().trim());
+            } else if self.browse.section == Section::Liked {
                 self.transport.source = PlaySource::Liked;
                 self.transport.source_name = "Liked Songs".to_string();
             } else {

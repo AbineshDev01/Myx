@@ -707,9 +707,60 @@ fn radio_tracks_blocking(
     if token.is_empty() {
         bail!("myx is not signed in to the Web API");
     }
-    let seeds = resolve_seed(&token, seed_uri)?;
-    let recommendations = fetch_recommendations(&token, &seeds)?;
-    Ok(recommendations)
+    let seeds = match resolve_seed(&token, seed_uri) {
+        Ok(s) => s,
+        Err(e) => {
+            if seed_uri.starts_with("spotify:track:") {
+                return Ok(vec![seed_uri.to_string()]);
+            }
+            return Err(e);
+        }
+    };
+    match fetch_recommendations(&token, &seeds) {
+        Ok(recommendations) if !recommendations.is_empty() => Ok(recommendations),
+        Err(e) => {
+            log::warn!(
+                target: "myx::engine",
+                "recommendations endpoint failed ({e:#}); falling back to seed track"
+            );
+            if !seeds.tracks.is_empty() {
+                Ok(seeds
+                    .tracks
+                    .into_iter()
+                    .map(|id| {
+                        if id.starts_with("spotify:track:") {
+                            id
+                        } else {
+                            format!("spotify:track:{id}")
+                        }
+                    })
+                    .collect())
+            } else if seed_uri.starts_with("spotify:track:") {
+                Ok(vec![seed_uri.to_string()])
+            } else {
+                bail!("no tracks found for radio seed: {seed_uri}");
+            }
+        }
+        Ok(_) => {
+            if !seeds.tracks.is_empty() {
+                Ok(seeds
+                    .tracks
+                    .into_iter()
+                    .map(|id| {
+                        if id.starts_with("spotify:track:") {
+                            id
+                        } else {
+                            format!("spotify:track:{id}")
+                        }
+                    })
+                    .collect())
+            } else if seed_uri.starts_with("spotify:track:") {
+                Ok(vec![seed_uri.to_string()])
+            } else {
+                bail!("no tracks found for radio seed: {seed_uri}");
+            }
+        }
+    }
 }
 
 /// Resolve a seed URI into Web API recommendation seeds.

@@ -193,7 +193,6 @@ pub(crate) struct Detail {
 pub(crate) enum Activated {
     None,
     Open(String, String), // drill into a context (uri, name)
-    Radio(String),        // start this song's radio (seed uri)
 }
 
 #[derive(Default, Clone)]

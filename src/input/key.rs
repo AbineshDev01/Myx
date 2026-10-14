@@ -231,28 +231,6 @@ pub(crate) fn handle_key(
             Activated::Open(uri, name) => {
                 spawn_detail_fetch(app.svc.webapi.clone(), uri, name, chans.detail.clone());
             }
-            Activated::Radio(uri) => {
-                app.status = "starting radio…".to_string();
-                let webapi = app.svc.webapi.clone();
-                let tx = chans.radio.clone();
-                tokio::spawn(async move {
-                    let res = match tokio::time::timeout(
-                        Duration::from_secs(12),
-                        engine::radio_tracks(webapi, &uri),
-                    )
-                    .await
-                    {
-                        Ok(r) => r.map_err(|e| e.to_string()),
-                        Err(_) => {
-                            Err("timed out (recommendations endpoint unresponsive)".to_string())
-                        }
-                    };
-                    let _ = tx.send(res.map(|uris| Radio {
-                        uris,
-                        start_position_ms: 0,
-                    }));
-                });
-            }
             Activated::None => {}
         },
         _ => {}
