@@ -217,6 +217,18 @@ async fn spawn_and_wait(
     use_pipewire: bool,
     data_dir: &Path,
 ) -> Result<Child, SpawnOutcome> {
+    // Clear any stale context player state restore file so Soloist doesn't
+    // resurrect leftover manual queues from older sessions.
+    let users_dir = data_dir.join("cache").join("Users");
+    if let Ok(entries) = std::fs::read_dir(&users_dir) {
+        for entry in entries.flatten() {
+            let restore_file = entry.path().join("context_player_state_restore");
+            if restore_file.is_file() {
+                let _ = std::fs::remove_file(restore_file);
+            }
+        }
+    }
+
     let mut command = Command::new(executable);
     command
         .arg("--device-name")

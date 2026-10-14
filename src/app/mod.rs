@@ -141,18 +141,26 @@ impl App {
         if item.is_play() {
             // Special synthetic rows: play the Liked list (optionally shuffled).
             if item.uri == "myx:action:liked-play" {
-                let uris: Vec<String> = self
+                let tracks: Vec<(String, String)> = self
                     .browse
                     .library
                     .liked
                     .iter()
                     .filter(|i| i.is_track())
-                    .map(|i| i.uri.clone())
+                    .map(|i| (i.name.clone(), i.uri.clone()))
                     .collect();
-                if !uris.is_empty() {
+                if !tracks.is_empty() {
                     self.transport.source = PlaySource::Liked;
                     self.transport.source_name = "Liked Songs".to_string();
                     self.status = "starting Liked Songs…".to_string();
+                    let uris: Vec<String> = tracks.iter().map(|(_, u)| u.clone()).collect();
+                    if tracks.len() > 1 {
+                        self.transport.queue = tracks[1..].iter().map(|(n, _)| n.clone()).collect();
+                        self.transport.queue_uris = tracks[1..].iter().map(|(_, u)| u.clone()).collect();
+                    } else {
+                        self.transport.queue.clear();
+                        self.transport.queue_uris.clear();
+                    }
                     // Honour the current shuffle toggle instead of a dedicated row.
                     if let Err(e) =
                         self.svc
@@ -173,18 +181,49 @@ impl App {
                 .map(|d| d.title.clone())
                 .unwrap_or_else(|| item.name.clone());
             let shuffle = self.transport.shuffle;
+            if let Some(d) = self.browse.details.last() {
+                let tracks: Vec<(String, String)> = d
+                    .items
+                    .iter()
+                    .filter(|i| i.is_track())
+                    .map(|i| (i.name.clone(), i.uri.clone()))
+                    .collect();
+                if tracks.len() > 1 {
+                    self.transport.queue = tracks[1..].iter().map(|(n, _)| n.clone()).collect();
+                    self.transport.queue_uris = tracks[1..].iter().map(|(_, u)| u.clone()).collect();
+                } else {
+                    self.transport.queue.clear();
+                    self.transport.queue_uris.clear();
+                }
+            }
             self.play_context_row(item.uri, name, shuffle);
             return Activated::None;
         }
         if item.is_track() {
-            // Inside a drill-in → play its context at this track (real queue).
+            // Inside a drill-in → play its context starting at this track.
             if let Some(d) = self.browse.details.last() {
                 let ctx = d.context_uri.clone();
-                self.transport.source = PlaySource::Context(ctx.clone());
+                self.transport.source = PlaySource::Context(ctx);
                 self.transport.source_name = d.title.clone();
                 self.status = format!("starting {}…", item.name);
-                if let Err(e) = self.svc.engine.play_context_at(
-                    ctx,
+                let tracks: Vec<(String, String)> = d
+                    .items
+                    .iter()
+                    .filter(|i| i.is_track())
+                    .map(|i| (i.name.clone(), i.uri.clone()))
+                    .collect();
+                let uris: Vec<String> = tracks.iter().map(|(_, u)| u.clone()).collect();
+                if let Some(pos) = tracks.iter().position(|(_, u)| u == &item.uri) {
+                    if pos + 1 < tracks.len() {
+                        self.transport.queue = tracks[pos + 1..].iter().map(|(n, _)| n.clone()).collect();
+                        self.transport.queue_uris = tracks[pos + 1..].iter().map(|(_, u)| u.clone()).collect();
+                    } else {
+                        self.transport.queue.clear();
+                        self.transport.queue_uris.clear();
+                    }
+                }
+                if let Err(e) = self.svc.engine.play_tracks(
+                    uris,
                     Some(item.uri.clone()),
                     0,
                     self.transport.shuffle,
@@ -194,12 +233,22 @@ impl App {
                 return Activated::None;
             }
             // Section track list or search results.
-            let uris = self
+            let tracks: Vec<(String, String)> = self
                 .cur_items()
                 .iter()
                 .filter(|i| i.is_track())
-                .map(|i| i.uri.clone())
+                .map(|i| (i.name.clone(), i.uri.clone()))
                 .collect();
+            let uris: Vec<String> = tracks.iter().map(|(_, u)| u.clone()).collect();
+            if let Some(pos) = tracks.iter().position(|(_, u)| u == &item.uri) {
+                if pos + 1 < tracks.len() {
+                    self.transport.queue = tracks[pos + 1..].iter().map(|(n, _)| n.clone()).collect();
+                    self.transport.queue_uris = tracks[pos + 1..].iter().map(|(_, u)| u.clone()).collect();
+                } else {
+                    self.transport.queue.clear();
+                    self.transport.queue_uris.clear();
+                }
+            }
             self.status = format!("starting {}…", item.name);
             if self.search.searching {
                 self.transport.source = PlaySource::None;

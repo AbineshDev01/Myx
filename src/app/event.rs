@@ -124,6 +124,12 @@ pub(crate) fn handle_engine_event(
             };
         }
         EngineEvent::EndOfTrack { .. } => {}
+        EngineEvent::QueueChanged(queue) => {
+            if !queue.is_empty() {
+                app.transport.queue = queue.iter().map(|(d, _)| d.clone()).collect();
+                app.transport.queue_uris = queue.into_iter().map(|(_, u)| u).collect();
+            }
+        }
     }
 }
 

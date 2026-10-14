@@ -66,6 +66,9 @@ async fn main() -> anyhow::Result<()> {
                     EngineEvent::PositionCorrection { uri, position_ms } => {
                         println!("↔ position  {uri} @ {position_ms}ms")
                     }
+                    EngineEvent::QueueChanged(queue) => {
+                        println!("☷ queue changed ({} tracks)", queue.len());
+                    }
                 }
             }
             cmd = cmd_rx.recv_async() => {

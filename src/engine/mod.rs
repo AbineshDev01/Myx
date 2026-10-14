@@ -59,6 +59,8 @@ pub enum EngineEvent {
     /// rather than a discrete end-of-track event.
     #[allow(dead_code)]
     EndOfTrack { uri: String },
+    /// Soloist's upcoming queue changed.
+    QueueChanged(Vec<(String, String)>),
 }
 
 /// A running playback engine backed by Soloist.
@@ -85,6 +87,17 @@ pub(crate) struct PendingSeek {
     pub created_at: Instant,
 }
 
+/// State for driving sequential playback of an explicit list of tracks
+/// (such as Liked Songs or search results) without polluting Spotify's
+/// persistent user queue.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TrackListState {
+    pub tracks: Vec<String>,
+    pub current_index: usize,
+    pub duration_ms: u32,
+    pub transitioning: bool,
+}
+
 /// The last-known playback state, reconstructed from
 /// Soloist's events. Soloist's granular events
 /// (`playback_changed`, `track_changed`) do not repeat
@@ -98,6 +111,7 @@ struct Snapshot {
     shuffle: bool,
     repeat: RepeatMode,
     pending_seek: Option<PendingSeek>,
+    track_list: Option<TrackListState>,
 }
 
 
@@ -247,6 +261,11 @@ impl Engine {
     /// single track/episode). Soloist resolves the URI and
     /// plays it from the start.
     pub fn play_context(&self, context_uri: String, shuffle: bool) -> Result<()> {
+        self.process.clear_tap();
+        {
+            let mut snap = self.snapshot.lock().unwrap();
+            snap.track_list = None;
+        }
         self.send(Command::play_uri(context_uri))?;
         self.send(Command::set_shuffle(shuffle))
     }
@@ -266,17 +285,21 @@ impl Engine {
         position_ms: u32,
         shuffle: bool,
     ) -> Result<()> {
-        if position_ms > 0 {
+        self.process.clear_tap();
+        {
             let mut snap = self.snapshot.lock().unwrap();
-            if let Some(ref t) = track_uri {
-                snap.uri = t.clone();
+            snap.track_list = None;
+            if position_ms > 0 {
+                if let Some(ref t) = track_uri {
+                    snap.uri = t.clone();
+                }
+                snap.position_ms = position_ms;
+                snap.pending_seek = Some(PendingSeek {
+                    target_ms: position_ms as u64,
+                    target_uri: track_uri,
+                    created_at: Instant::now(),
+                });
             }
-            snap.position_ms = position_ms;
-            snap.pending_seek = Some(PendingSeek {
-                target_ms: position_ms as u64,
-                target_uri: track_uri,
-                created_at: Instant::now(),
-            });
         }
         self.send(Command::play_uri(context_uri))?;
         self.send(Command::set_shuffle(shuffle))
@@ -285,14 +308,12 @@ impl Engine {
     /// Play an explicit list of tracks, optionally
     /// starting at a particular one and position.
     ///
-    /// Soloist's `play` command accepts a single URI, so
-    /// the list is delivered as: the remaining tracks are
-    /// queued, the start track (or the first track) is
-    /// played, and playback seeks to the requested
-    /// position once the track is loaded.
+    /// Sequential playback is driven seamlessly without dumping
+    /// tracks into Spotify's manual user queue, preventing context
+    /// hijacking and queue pollution.
     pub fn play_tracks(
         &self,
-        tracks: Vec<String>,
+        mut tracks: Vec<String>,
         start_uri: Option<String>,
         start_position_ms: u32,
         shuffle: bool,
@@ -305,6 +326,30 @@ impl Engine {
             .filter(|uri| tracks.iter().any(|t| t == uri))
             .unwrap_or_else(|| tracks[0].clone());
 
+        let start_idx = tracks.iter().position(|t| t == &start).unwrap_or(0);
+
+        if shuffle && tracks.len() > 1 {
+            tracks.swap(0, start_idx);
+            use rand::seq::SliceRandom;
+            let mut rng = rand::rng();
+            tracks[1..].shuffle(&mut rng);
+            let mut snap = self.snapshot.lock().unwrap();
+            snap.track_list = Some(TrackListState {
+                tracks: tracks.clone(),
+                current_index: 0,
+                duration_ms: 0,
+                transitioning: false,
+            });
+        } else {
+            let mut snap = self.snapshot.lock().unwrap();
+            snap.track_list = Some(TrackListState {
+                tracks: tracks.clone(),
+                current_index: start_idx,
+                duration_ms: 0,
+                transitioning: false,
+            });
+        }
+
         if start_position_ms > 0 {
             let mut snap = self.snapshot.lock().unwrap();
             snap.uri = start.clone();
@@ -316,31 +361,26 @@ impl Engine {
             });
         }
 
-        // Play the starting track immediately so playback begins without delay.
-        self.send(Command::play_uri(start.clone()))?;
-        self.send(Command::set_shuffle(shuffle))?;
-
-        // Queue subsequent tracks that follow `start` in order (capped at 50
-        // to avoid flooding the WebSocket and queue with hundreds of items).
-        let start_idx = tracks.iter().position(|t| t == &start).unwrap_or(0);
-        for track in tracks.iter().skip(start_idx + 1).take(50) {
-            self.send(Command::add_to_queue(track.clone()))?;
-        }
-        Ok(())
+        // Play the starting track immediately.
+        self.send(Command::play_uri(start))?;
+        self.send(Command::set_shuffle(shuffle))
     }
 
     /// Play a single track at an optional position.
     pub fn play_track_at(&self, uri: String, position_ms: u32) -> Result<()> {
         self.process.clear_tap();
-        if position_ms > 0 {
+        {
             let mut snap = self.snapshot.lock().unwrap();
-            snap.uri = uri.clone();
-            snap.position_ms = position_ms;
-            snap.pending_seek = Some(PendingSeek {
-                target_ms: position_ms as u64,
-                target_uri: Some(uri.clone()),
-                created_at: Instant::now(),
-            });
+            snap.track_list = None;
+            if position_ms > 0 {
+                snap.uri = uri.clone();
+                snap.position_ms = position_ms;
+                snap.pending_seek = Some(PendingSeek {
+                    target_ms: position_ms as u64,
+                    target_uri: Some(uri.clone()),
+                    created_at: Instant::now(),
+                });
+            }
         }
         self.send(Command::play_uri(uri))
     }
@@ -378,14 +418,44 @@ impl Engine {
     pub fn next(&self) -> Result<()> {
         self.snapshot.lock().unwrap().pending_seek = None;
         self.process.clear_tap();
-        self.send(Command::skip_next())
+        let mut next_track = None;
+        {
+            let mut snap = self.snapshot.lock().unwrap();
+            if let Some(tl) = snap.track_list.as_mut() {
+                if tl.current_index + 1 < tl.tracks.len() {
+                    tl.current_index += 1;
+                    tl.transitioning = false;
+                    next_track = Some(tl.tracks[tl.current_index].clone());
+                }
+            }
+        }
+        if let Some(track) = next_track {
+            self.send(Command::play_uri(track))
+        } else {
+            self.send(Command::skip_next())
+        }
     }
 
     /// Skip to the previous track.
     pub fn prev(&self) -> Result<()> {
         self.snapshot.lock().unwrap().pending_seek = None;
         self.process.clear_tap();
-        self.send(Command::skip_prev())
+        let mut prev_track = None;
+        {
+            let mut snap = self.snapshot.lock().unwrap();
+            if let Some(tl) = snap.track_list.as_mut() {
+                if tl.current_index > 0 {
+                    tl.current_index -= 1;
+                    tl.transitioning = false;
+                    prev_track = Some(tl.tracks[tl.current_index].clone());
+                }
+            }
+        }
+        if let Some(track) = prev_track {
+            self.send(Command::play_uri(track))
+        } else {
+            self.send(Command::skip_prev())
+        }
     }
 
     /// Stop playback.
@@ -522,6 +592,11 @@ fn handle_server_event(
             snap.playing = state.status.is_playing();
             if let Some(item) = &state.item {
                 snap.uri = item.uri.clone();
+                if let Some(dur) = item.duration_ms() {
+                    if let Some(tl) = snap.track_list.as_mut() {
+                        tl.duration_ms = dur.min(u32::MAX as u64) as u32;
+                    }
+                }
             }
             if let Some(options) = &state.options {
                 snap.shuffle = options.shuffle;
@@ -583,8 +658,28 @@ fn handle_server_event(
             if !has_matching_seek {
                 snap.position_ms = 0;
             }
+            if let Some(dur) = item.duration_ms() {
+                if let Some(tl) = snap.track_list.as_mut() {
+                    tl.duration_ms = dur.min(u32::MAX as u64) as u32;
+                    tl.transitioning = false;
+                }
+            }
+            let mut redirect_uri = None;
+            if let Some(tl) = snap.track_list.as_mut() {
+                if let Some(pos) = tl.tracks.iter().position(|t| t == &item.uri) {
+                    tl.current_index = pos;
+                    tl.transitioning = false;
+                } else if tl.current_index + 1 < tl.tracks.len() {
+                    tl.current_index += 1;
+                    tl.transitioning = true;
+                    redirect_uri = Some(tl.tracks[tl.current_index].clone());
+                }
+            }
             let uri = snap.uri.clone();
             drop(snap);
+            if let Some(next_uri) = redirect_uri {
+                let _ = client.send(Command::play_uri(next_uri));
+            }
             let _ = tx.send(EngineEvent::TrackChanged { uri });
         }
         ServerEvent::PlaybackChanged { status } => {
@@ -629,18 +724,58 @@ fn handle_server_event(
             if snap.pending_seek.is_none() {
                 snap.position_ms = position.position_ms.min(u32::MAX as u64) as u32;
             }
+
+            let pos_ms = snap.position_ms;
+            let mut next_track_uri = None;
+            if let Some(tl) = snap.track_list.as_mut() {
+                if tl.duration_ms > 0
+                    && pos_ms + 1000 >= tl.duration_ms
+                    && !tl.transitioning
+                    && tl.current_index + 1 < tl.tracks.len()
+                {
+                    tl.transitioning = true;
+                    tl.current_index += 1;
+                    next_track_uri = Some(tl.tracks[tl.current_index].clone());
+                }
+            }
+
             let (uri, position_ms) = (snap.uri.clone(), snap.position_ms);
             drop(snap);
+            if let Some(next_uri) = next_track_uri {
+                let _ = client.send(Command::play_uri(next_uri));
+            }
             let _ = tx.send(EngineEvent::PositionCorrection { uri, position_ms });
         }
         ServerEvent::OptionsChanged { options } => {
             snap.shuffle = options.shuffle;
             snap.repeat = options.repeat;
         }
+        ServerEvent::ContextChanged { .. } => {
+            snap.track_list = None;
+        }
+        ServerEvent::QueueChanged { upcoming, .. } => {
+            let list: Vec<(String, String)> = upcoming
+                .iter()
+                .filter_map(|entry| {
+                    let uri = entry.item.uri.clone();
+                    if uri.is_empty() || uri.contains("placeholder") {
+                        return None;
+                    }
+                    let name = entry.item.name()?.to_string();
+                    let artists = entry.item.artist_names();
+                    let display = if artists.is_empty() {
+                        name
+                    } else {
+                        format!("{} — {}", name, artists.join(", "))
+                    };
+                    Some((display, uri))
+                })
+                .collect();
+            drop(snap);
+            let _ = tx.send(EngineEvent::QueueChanged(list));
+        }
         ServerEvent::VolumeChanged { .. }
         | ServerEvent::DeviceChanged { .. }
-        | ServerEvent::ContextChanged { .. }
-        | ServerEvent::QueueChanged { .. }
         | ServerEvent::CommandResult { .. } => {}
         ServerEvent::Error { message } => {
             log::warn!(target: "myx::engine", "soloist reported an error: {message}");
@@ -1153,4 +1288,114 @@ mod tests {
         assert!(snapshot.lock().unwrap().pending_seek.is_none());
     }
 
+    #[test]
+    fn server_event_translation_queue_changed() {
+        let snapshot = Arc::new(Mutex::new(Snapshot::default()));
+        let (tx, rx) = flume::unbounded();
+        let (client, _cmd_rx) = client::ClientHandle::dummy();
+
+        let upcoming = vec![
+            crate::soloist::protocol::QueueEntry {
+                uid: Some("u1".into()),
+                source: Some("context".into()),
+                item: crate::soloist::protocol::Entity {
+                    uri: "spotify:track:t1".into(),
+                    decorations: crate::soloist::protocol::Decorations {
+                        identity: Some(crate::soloist::protocol::Identity {
+                            name: Some("Song One".into()),
+                        }),
+                        creators: vec![crate::soloist::protocol::Creator {
+                            entity: Box::new(crate::soloist::protocol::Entity {
+                                decorations: crate::soloist::protocol::Decorations {
+                                    identity: Some(crate::soloist::protocol::Identity {
+                                        name: Some("Artist One".into()),
+                                    }),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            }),
+                        }],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            },
+            crate::soloist::protocol::QueueEntry {
+                uid: Some("u2".into()),
+                source: Some("context".into()),
+                item: crate::soloist::protocol::Entity {
+                    uri: "spotify:track:placeholder".into(),
+                    ..Default::default()
+                },
+            },
+        ];
+
+        handle_server_event(
+            &ServerEvent::QueueChanged {
+                previous: vec![],
+                upcoming,
+            },
+            &snapshot,
+            &tx,
+            &client,
+        );
+
+        match rx.try_recv().unwrap() {
+            EngineEvent::QueueChanged(list) => {
+                assert_eq!(list.len(), 1);
+                assert_eq!(list[0].0, "Song One — Artist One");
+                assert_eq!(list[0].1, "spotify:track:t1");
+            }
+            other => panic!("expected QueueChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn track_list_progression_advances_near_end() {
+        let snapshot = Arc::new(Mutex::new(Snapshot {
+            uri: "spotify:track:1".into(),
+            position_ms: 10000,
+            track_list: Some(TrackListState {
+                tracks: vec!["spotify:track:1".into(), "spotify:track:2".into()],
+                current_index: 0,
+                duration_ms: 60000,
+                transitioning: false,
+            }),
+            ..Default::default()
+        }));
+        let (tx, _rx) = flume::unbounded();
+        let (client, cmd_rx) = client::ClientHandle::dummy();
+
+        // 1. PositionSync at 50s (not near end): no transition
+        handle_server_event(
+            &ServerEvent::PositionSync {
+                position: crate::soloist::protocol::Position {
+                    position_ms: 50000,
+                    ..Default::default()
+                },
+            },
+            &snapshot,
+            &tx,
+            &client,
+        );
+        assert!(cmd_rx.try_recv().is_err());
+        assert_eq!(snapshot.lock().unwrap().track_list.as_ref().unwrap().current_index, 0);
+
+        // 2. PositionSync at 59.2s (near 60s end): transitions to track 2!
+        handle_server_event(
+            &ServerEvent::PositionSync {
+                position: crate::soloist::protocol::Position {
+                    position_ms: 59200,
+                    ..Default::default()
+                },
+            },
+            &snapshot,
+            &tx,
+            &client,
+        );
+        let cmd = cmd_rx.try_recv().expect("next track play command dispatched");
+        assert_eq!(cmd.command, "play");
+        assert_eq!(cmd.uri, Some("spotify:track:2".into()));
+        assert_eq!(snapshot.lock().unwrap().track_list.as_ref().unwrap().current_index, 1);
+    }
 }
