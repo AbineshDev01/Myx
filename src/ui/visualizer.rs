@@ -7,9 +7,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use myx::audio::NUM_BANDS;
-use myx::gradient;
-use myx::theme::Theme;
+use soloist_tui::audio::NUM_BANDS;
+use soloist_tui::gradient;
+use soloist_tui::theme::Theme;
 use crate::app::App;
 
 /// Eighth-block sub-cell characters from 1/8th to full block.

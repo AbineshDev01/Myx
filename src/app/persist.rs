@@ -35,7 +35,16 @@ pub(crate) struct LastPlayed {
 
 impl SavedState {
     pub(crate) fn path() -> Option<std::path::PathBuf> {
-        Some(myx::home_dir()?.join(".cache/myx/state.json"))
+        let home = crate::home_dir()?;
+        let soloist_path = home.join(".cache/soloist-tui/state.json");
+        if soloist_path.exists() {
+            return Some(soloist_path);
+        }
+        let legacy_path = home.join(".cache/myx/state.json");
+        if legacy_path.exists() {
+            return Some(legacy_path);
+        }
+        Some(soloist_path)
     }
     pub(crate) fn load() -> SavedState {
         Self::path()

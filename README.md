@@ -1,158 +1,234 @@
-# myx
+# soloist-tui
 
-A lean, beautiful terminal Spotify player in Rust. Streams natively as a Spotify
-Connect device, with album-art-reactive theming, a ten-band equalizer, and synced lyrics.
-
-<p align="center"><video src="https://github.com/user-attachments/assets/90706ba9-4c48-43d0-ad16-17b95c95dc94" alt="myx recolors the whole interface to the album art" width="100%"></p>
+A lean, beautiful terminal Spotify player in Rust, powered by **Soloist**. Streams natively as a Spotify Connect device with album-art-reactive dynamic theming, a liquid waveform ribbon visualizer, a ten-band parametric equalizer, synced lyrics, full queue management, and like track indication.
 
 <p align="center">
-  <img src="https://github.com/HaseebKhalid1507/Myx/releases/download/readme-assets/myx.png" width="49%">
-  <img src="https://github.com/user-attachments/assets/48dfec67-edd1-4903-a18d-8ed6d06ee5f9" width="49%">
-  <img src="https://github.com/user-attachments/assets/dd3844ad-f0c7-41ec-a934-86bb0e3ef75b" width="49%">
-  <img src="https://github.com/user-attachments/assets/08b3f505-5e48-4cd8-9b8d-0788d37f30c2" width="49%">
+  <video src="https://github.com/user-attachments/assets/90706ba9-4c48-43d0-ad16-17b95c95dc94" alt="soloist-tui recolors the whole interface to the album art" width="100%"></video>
 </p>
 
-> Requires **Spotify Premium**. Works on Linux, macOS, and Windows. Album art is
-> crispest on kitty, WezTerm, or foot.
+<p align="center">
+  <img src="https://github.com/HaseebKhalid1507/Myx/releases/download/readme-assets/myx.png" width="49%" alt="soloist-tui playback view">
+  <img src="https://github.com/user-attachments/assets/48dfec67-edd1-4903-a18d-8ed6d06ee5f9" width="49%" alt="soloist-tui library and search">
+  <img src="https://github.com/user-attachments/assets/dd3844ad-f0c7-41ec-a934-86bb0e3ef75b" width="49%" alt="soloist-tui equalizer overlay">
+  <img src="https://github.com/user-attachments/assets/08b3f505-5e48-4cd8-9b8d-0788d37f30c2" width="49%" alt="soloist-tui synced lyrics">
+</p>
 
-## Install
+> **Note:** Requires **Spotify Premium**. Runs on Linux, macOS, and Windows. Album art renders crispest on modern terminal emulators with graphics protocol support (Kitty, WezTerm, Ghostty, or Foot).
+
+---
+
+## ✨ Features
+
+- ⚡ **Soloist Backend Integration**: High-performance, low-latency Spotify Connect engine driven over local WebSocket with real-time state tracking and automatic session reconnection.
+- 🎨 **Album-Art-Reactive Theming**: Real-time extraction of a 16-token semantic color palette from album covers with smooth interpolated cross-fades between tracks.
+- 🌊 **Liquid Waveform Ribbon Visualizer**: High-resolution center-axis fluid audio ribbon visualizer responding dynamically to active sound playback.
+- 🎚️ **10-Band Live Parametric Equalizer**: 10 frequency bands (31Hz – 16kHz) with presets (*Bass Boost*, *Rock*, *Jazz*, *Vocal*, *Electronic*, *Treble Boost*, *Flat*) and custom curves with digital headroom management.
+- 📜 **Synced & Plain Lyrics**: Automatically synchronizes and auto-scrolls lyrics via LRCLib, keeping pace with current playback position.
+- ❤️ **Full UI Liked Track Indicators**: Instant `♥` badges across the library, drill-in views, search results, queue, persistent now-playing bar, and Now Playing screen; one-key toggle (`l`) with immediate optimistic feedback and Spotify Web API synchronization.
+- 📑 **Comprehensive Library & Queue**: Multi-section browser (Playlists, Liked Songs, Albums, Artists, Recently Played, and Home feed), interactive search, and live queue inspection.
+- 🪟 **Transparent Terminal Background**: Press `T` anytime to toggle transparent background mode so your terminal's blur, opacity, or wallpaper shines through.
+- 🎧 **OS Media Controls & MPRIS**: Native integration with system media keys, lock screen widgets, and headphone controls on macOS and Linux.
+- 🔌 **MXC (Color Protocol)**: Exposes a Unix domain socket (`$XDG_RUNTIME_DIR/soloist-tui/theme.sock`) streaming album-derived palette tokens for external scripting, window manager borders, Polybar/Waybar integration, or desktop theming.
+
+---
+
+## 📦 Requirements & System Dependencies
+
+### 1. Spotify Requirements
+- A **Spotify Premium** account (required by Spotify for streaming via Connect).
+- A free **Spotify Developer Client ID** (see [Setup](#-getting-started)).
+
+### 2. Audio & Build Dependencies
+
+#### **Linux (Debian / Ubuntu / Pop!_OS / Linux Mint)**
+```bash
+sudo apt update
+sudo apt install -y build-essential pkg-config libasound2-dev libssl-dev
+```
+
+#### **Linux (Arch Linux / Manjaro)**
+```bash
+sudo pacman -S --needed base-devel alsa-lib openssl
+```
+
+#### **Linux (Fedora / RHEL)**
+```bash
+sudo dnf install -y gcc pkg-config alsa-lib-devel openssl-devel
+```
+
+#### **macOS**
+- Xcode Command Line Tools: `xcode-select --install`
+- Audio works out of the box via macOS CoreAudio.
+
+#### **Windows**
+- Install [Rust via rustup.rs](https://rustup.rs).
+- Native Windows audio and terminal console support are included.
+
+### 3. Spotify Soloist Binary
+`soloist-tui` drives **Spotify Soloist** as its playback engine.
+Ensure `soloist` is installed in your `$PATH` (or specify its location in `~/.config/soloist-tui/config.toml` under `[soloist] executable`).
+
+---
+
+## 🚀 Installation
+
+### From Source (Cargo)
+Ensure you have the Rust toolchain installed:
 
 ```bash
-# Arch (AUR)
-yay -S myx
-
-# macOS / Linux (Homebrew)
-brew install HaseebKhalid1507/homebrew-tap/myx
-
-# Cargo (all platforms — Linux, macOS, Windows)
-cargo install myx
-
-# Prebuilt binary (Linux x86_64, macOS)
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/HaseebKhalid1507/Myx/releases/latest/download/myx-installer.sh | sh
+git clone https://github.com/HaseebKhalid1507/soloist-tui.git
+cd soloist-tui
+cargo install --path .
 ```
 
-On **Windows**, install [Rust](https://rustup.rs) first, then `cargo install myx` in
-PowerShell. Set `MYX_CLIENT_ID` as an environment variable or place your client ID in
-`%USERPROFILE%\.config\myx\client_id`.
+The compiled binary will be placed at `~/.cargo/bin/soloist-tui`.
 
-Or grab a `.deb` / archive from [Releases](https://github.com/HaseebKhalid1507/Myx/releases),
-or build from source: `cargo install --path .`.
-
-## Get started
-
-You need a free Spotify app client ID (one minute):
-
-1. [Spotify developer dashboard](https://developer.spotify.com/dashboard), then **Create app**
-2. Add the redirect URI `http://127.0.0.1:8989/login`
-3. Copy the **Client ID** and set it:
+### Build Release Binary
+To build an optimized release binary locally:
 
 ```bash
-export MYX_CLIENT_ID=<your-client-id>
+cargo build --release
+# Executable is located at target/release/soloist-tui
 ```
 
-Then run:
+---
 
-```bash
-myx
-```
+## 🔑 Getting Started
 
-First launch opens your browser to log in (OAuth PKCE, no secret needed). Then
-browse with `↑↓` and hit `⏎` to play. After that, just `myx`.
+`soloist-tui` uses Spotify's modern OAuth 2.0 PKCE authentication flow. You only need a free Spotify Client ID (takes about 1 minute):
 
-## Keys
+1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) and log in.
+2. Click **Create App**:
+   - **App Name**: `soloist-tui` (or any name you like)
+   - **App Description**: `Terminal Spotify player`
+   - **Redirect URI**: `http://127.0.0.1:8989/login` *(Must match exactly)*
+   - **APIs used**: Select **Web API**
+3. Save the app, open **Settings**, and copy your **Client ID**.
+4. Set your Client ID either:
+   - Via environment variable:
+     ```bash
+     export SOLOIST_CLIENT_ID="<your-32-digit-client-id>"
+     ```
+   - Or in `~/.config/soloist-tui/config.toml`:
+     ```toml
+     client_id = "<your-32-digit-client-id>"
+     ```
+   - Or simply launch `soloist-tui` and paste it into the interactive prompt on first run!
 
-```
-⇥ / [ ]    switch section        ← →      switch view
-↑↓ / j k   move                  ⏎        play / open
-⇧ ⏎        play the highlighted album, playlist or artist
-/          search                a        actions
-space      play · pause          n / b    next · prev
-⇧ ← →      seek                  s        shuffle
-+ / -      volume                R        repeat
-o          sort                  r        reload
-z          hide sidebar          e        equalizer
-q          quit                  T        transparent background
-```
+5. Run `soloist-tui`:
+   ```bash
+   soloist-tui
+   ```
+   On first launch, your browser will open to authorize your client. Once authorized, you can close the browser tab. All subsequent launches will authenticate automatically.
 
-Media keys (Play/Pause, Stop, Next, Prev, Volume) work when the terminal is
-focused. On macOS and Linux, AirPods and headphone controls work from anywhere
-via the system's Now Playing integration. Mouse works too: click tabs, click a
-track, double-click to play.
+---
 
-## Transparent background
+## ⌨️ Keybindings
 
-myx can leave the background to your terminal, so its own colour, opacity and
-blur show through while the text, accents and borders keep following the album
-art. The selected row and popups stay on a solid fill so they still read.
+| Key | Action |
+| :--- | :--- |
+| `⇥` / `[` `]` | Cycle library sections (Home, Recent, Playlists, Liked, Albums, Artists) |
+| `←` `→` | Switch active right-hand view (*Now Playing*, *Lyrics*, *Queue*) |
+| `↑` `↓` / `j` `k` | Move cursor in the active list |
+| `⏎` (Enter) | Open selected context / play selected track |
+| `⇧ ⏎` / `P` | Play context outright (plays selected playlist/album/artist) |
+| `S` | Play selected context with shuffle enabled |
+| `l` | **Toggle Liked status** for selected track (or currently playing track) |
+| `/` | Open search input (press `⏎` to search, `Esc` to cancel) |
+| `Space` / `p` | Play / Pause toggle |
+| `n` / `b` | Skip to next / previous track |
+| `⇧ ←` / `⇧ →` | Seek backward / forward 5 seconds |
+| `+` / `-` | Volume up / down |
+| `s` | Toggle shuffle mode |
+| `R` | Cycle repeat mode (Off / Context / Track) |
+| `o` | Cycle sort order (Added, Title, Artist) |
+| `a` | Context actions menu (Add to queue, playlist, copy link, go to artist/album) |
+| `e` | Open 10-band Equalizer overlay |
+| `z` | Toggle Zen mode (collapses library sidebar) |
+| `T` | Toggle transparent background |
+| `r` | Refresh library sections |
+| `q` / `Ctrl-C` | Quit |
 
-- **Press `T`** (Shift+t) to flip between the transparent and the album-tinted
-  background. The choice is saved to `~/.config/myx/config.toml`, so it sticks.
-- **Or set it by hand**: `transparent = true` or `false` in the same file.
+---
 
-New installs start transparent. A config written by an older myx has no
-`transparent` line and keeps the album-tinted background until you press `T`.
-How see-through it gets is up to the terminal — WezTerm's
-`window_background_opacity`, kitty's `background_opacity`, and so on.
+## ⚙️ Configuration
 
-## Equalizer
-
-Press `e` for the live ten-band equalizer. Choose Flat, Bass Boost, Rock, Jazz,
-Vocal, Electronic or Treble Boost with `Tab` / `Shift+Tab`; changing a band
-creates a Custom curve. Use `←`/`→` to choose a band, `↑`/`↓` to adjust it,
-`Space` to compare against bypass, and `Esc` to close. Presets and sliders are
-also clickable and draggable. Automatic headroom keeps boosted curves from
-digitally clipping, and the complete curve is restored on the next launch.
-
-Holding `⇧ ←` / `⇧ →` scrubs continuously and commits one seek when you let go.
-`⇧ ⏎` needs a terminal that reports modified Enter (kitty, WezTerm, foot); `P`
-does the same everywhere.
-
-The album-art protocol is detected at startup and picked per terminal, including
-inside tmux. If your tmux has no sixel support, add `set -g focus-events on` to
-`~/.tmux.conf` so the art is re-sent when you switch back to myx's window.
-
-## Config
-
-`~/.config/myx/config.toml` is written on first run with every key but
-`transparent` commented out, so there is a file to edit and nothing to look up:
+`soloist-tui` automatically generates a configuration template on its first run at `~/.config/soloist-tui/config.toml` (with full backwards compatibility for `~/.config/myx/config.toml` if upgrading).
 
 ```toml
-# Rows kept visible above and below the cursor before the list scrolls.
+# soloist-tui configuration
+
+# Number of rows kept visible above and below the cursor when scrolling
 scrolloff = 3
 
-# Show the locally saved track, source and position when Myx starts, paused
-# until you press play.
+# Restore the last played track, context, queue, and position on startup (paused)
 restore_on_startup = true
 
-# Spotify app client id. MYX_CLIENT_ID overrides this if it is set.
-client_id = "your-client-id"
+# Your Spotify Developer App Client ID
+# (Overrides can also be supplied via the SOLOIST_CLIENT_ID environment variable)
+client_id = "your-client-id-here"
 
-# kitty, iterm2, sixel or halfblocks. Leave it out to auto-detect; set it if
-# album art comes out as a coarse mosaic, which means the terminal never
-# answered the detection query. MYX_PROTOCOL overrides this.
+# Terminal graphics protocol for album art: "kitty", "iterm2", "sixel", or "halfblocks"
+# Omit or leave commented to auto-detect your terminal capabilities
 protocol = "kitty"
 
-# Streaming quality in kbps: 96, 160 or 320. Any other whole number falls
-# back to 160.
+# Streaming bitrate: 96, 160, or 320 kbps (defaults to 160)
 bitrate = 160
 
-# Even out loudness across tracks, the equivalent of the official client's
-# "Normalize volume". Leave it off to keep each track's own dynamics.
+# Normalizes volume across tracks (similar to official Spotify client)
 normalize_volume = false
 
-# Leave the background to the terminal — its own colour, opacity and blur —
-# instead of the album-tinted one. Text and accents still follow the cover.
-# Press T in myx to flip it; this line is rewritten when you do.
+# Enable transparent background (inherits terminal background color and blur)
 transparent = true
+
+# Liquid waveform ribbon visualizer
+visualizer_enabled = true
+visualizer_sensitivity = 1.0
+
+# Soloist playback engine configuration
+[soloist]
+device_name = "soloist-tui"
+executable = "soloist"
+route_audio = false
+# ws = "ws://127.0.0.1:24879" # Optional: specify explicit running Soloist WebSocket endpoint
 ```
 
-## Credits
+### Environment Variables
+- `SOLOIST_CLIENT_ID` (or `MYX_CLIENT_ID`): Overrides `client_id` in config.toml.
+- `SOLOIST_CONFIG` (or `MYX_CONFIG`): Specify custom path to `config.toml`.
+- `SOLOIST_DEVICE_NAME`: Overrides Spotify Connect device name.
+- `SOLOIST_NO_COLOR_SOCKET`: Set to `1` to disable the MXC color publishing socket.
+- `SOLOIST_PROTOCOL`: Force terminal image protocol (`kitty`, `iterm2`, `sixel`, `halfblocks`).
 
-Streaming adapts pieces of [spotify-player](https://github.com/aome510/spotify-player)
-(MIT, © Thang Pham); visual language after [noodle](https://github.com/wilfredinni/noodle);
-built on [ratatui](https://ratatui.rs) and [librespot](https://github.com/librespot-org/librespot).
-See [NOTICE](NOTICE).
+---
 
-## License
+## 🎨 MXC (Color Protocol) Integration
 
-MIT, see [LICENSE](LICENSE).
+`soloist-tui` publishes its real-time album art palette over a local Unix domain socket at `$XDG_RUNTIME_DIR/soloist-tui/theme.sock`. External scripts or window managers can subscribe to these colors live:
+
+```bash
+# Print current theme palette variables and exit
+soloist-tui theme get
+
+# Export directly into current shell
+eval "$(soloist-tui theme get)"
+echo $MYX_PRIMARY $MYX_ACCENT
+
+# Stream CSS custom properties on track changes
+soloist-tui theme watch --format css
+
+# Trigger an external reload script on each track change
+soloist-tui theme watch --exec "polybar-msg hook theme-reload 1"
+```
+
+---
+
+## 📜 Credits & License
+
+- Built on the awesome [ratatui](https://ratatui.rs) ecosystem.
+- Connected via [Spotify Soloist](https://github.com/mopidy/soloist).
+- Visual design language and design-token aesthetics inspired by [noodle](https://github.com/wilfredinni/noodle).
+- Lyrics powered by [LRCLib](https://lrclib.net).
+- Audio DSP and equalizer powered by [rodio](https://github.com/RustAudio/rodio) and [rustfft](https://github.com/ejmahler/RustFFT).
+
+Licensed under the [MIT License](LICENSE).

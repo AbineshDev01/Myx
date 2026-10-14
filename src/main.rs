@@ -1,9 +1,11 @@
-//! myx — the fully-wired terminal Spotify player.
+//! soloist-tui — the fully-wired terminal Spotify player.
 //!
 //! Soloist playback backend + Web API (your own client id) + album-art-reactive
 //! theming with cross-fades + live equalizer, in noodle's visual language.
 //! Multi-section library (playlists / liked / albums / artists), shuffle, repeat,
 //! and a live queue view.
+
+use soloist_tui::*;
 
 /// The Spotify Web API layer. Talks HTTP, hands plain data back over channels.
 /// Lives in the binary (not the library) because it speaks the model types
@@ -45,21 +47,21 @@ use ratatui_image::picker::Picker;
 use api::*;
 use app::*;
 use input::*;
-use myx::anim::ThemeFade;
-use myx::audio::{
+use soloist_tui::anim::ThemeFade;
+use soloist_tui::audio::{
     EqualizerPreset, EqualizerSettings, EQ_FREQUENCIES_HZ, MAX_EQ_GAIN_DB, MIN_EQ_GAIN_DB,
     NUM_EQ_BANDS,
 };
-use myx::components::{gradient_line, gradient_progress, left_bar_block};
-use myx::cover::Cover;
-use myx::engine::{self, Engine, EngineEvent};
-use myx::liblog::{install_log, liblog};
-use myx::lyrics::parse::parse_lrc;
-use myx::reactive::derive_theme;
-use myx::term::{acquire_single_instance_lock, init_terminal, restore_terminal, Term};
-use myx::theme::{Theme, TOKYONIGHT};
-use myx::util::{center_v, fmt_ms, track_id_from_uri, truncate, uri_to_url, urlencode, vol_u16};
-use myx::webapi::WebApi;
+use soloist_tui::components::{gradient_line, gradient_progress, left_bar_block};
+use soloist_tui::cover::Cover;
+use soloist_tui::engine::{self, Engine, EngineEvent};
+use soloist_tui::liblog::{install_log, liblog};
+use soloist_tui::lyrics::parse::parse_lrc;
+use soloist_tui::reactive::derive_theme;
+use soloist_tui::term::{acquire_single_instance_lock, init_terminal, restore_terminal, Term};
+use soloist_tui::theme::{Theme, TOKYONIGHT};
+use soloist_tui::util::{center_v, fmt_ms, track_id_from_uri, truncate, uri_to_url, urlencode, vol_u16};
+use soloist_tui::webapi::WebApi;
 use ui::{render, render_loading};
 
 use souvlaki::{
@@ -79,13 +81,13 @@ fn main() -> Result<()> {
     {
         let argv: Vec<String> = std::env::args().collect();
         if argv.get(1).is_some_and(|a| a == "theme") {
-            std::process::exit(myx::mxc::cli::run(&argv[2..]));
+            std::process::exit(soloist_tui::mxc::cli::run(&argv[2..]));
         }
     }
 
     install_log();
     #[cfg(all(target_os = "linux", feature = "streaming"))]
-    myx::audio::suppress_alsa_errors();
+    soloist_tui::audio::suppress_alsa_errors();
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Refuse to start a second instance — two myx's racing on the shared Web API
@@ -118,7 +120,7 @@ fn main() -> Result<()> {
     // safe without concurrent readers. Hence the hand-built runtime below rather
     // than `#[tokio::main]`, which would already have spawned its workers by the
     // time this line ran.
-    let picker = Cover::make_picker(myx::config::get().protocol.as_deref());
+    let picker = Cover::make_picker(soloist_tui::config::get().protocol.as_deref());
     // Halfblocks here means the graphics query got no answer — the art will look
     // like a 25×26 mosaic. MYX_PROTOCOL overrides it.
     liblog(format!(
@@ -242,7 +244,7 @@ fn run_player_macos(
 /// differs in exactly one place instead of in every function that carries the
 /// value through.
 #[cfg(all(feature = "mxc", unix))]
-type MxcHandle = Option<myx::mxc::publish::Publisher>;
+type MxcHandle = Option<soloist_tui::mxc::publish::Publisher>;
 #[cfg(not(all(feature = "mxc", unix)))]
 type MxcHandle = ();
 
@@ -250,7 +252,7 @@ type MxcHandle = ();
 #[cfg(all(feature = "mxc", unix))]
 fn shutdown_publisher(handle: MxcHandle) {
     if let Some(publisher) = handle {
-        publisher.shutdown(myx::mxc::ByeReason::Shutdown);
+        publisher.shutdown(soloist_tui::mxc::ByeReason::Shutdown);
     }
 }
 
@@ -274,8 +276,8 @@ fn bind_publisher() -> MxcHandle {
         liblog("mxc: MYX_NO_COLOR_SOCKET set; colour publishing disabled");
         return None;
     }
-    let path = myx::mxc::socket_path();
-    match myx::mxc::publish::Publisher::bind(&path) {
+    let path = soloist_tui::mxc::socket_path();
+    match soloist_tui::mxc::publish::Publisher::bind(&path) {
         Ok(publisher) => {
             liblog(format!("mxc: publishing on {}", path.display()));
             Some(publisher)
@@ -322,9 +324,9 @@ fn should_restore_saved_playback(
 /// variable over the `[soloist]` table, so a one-off override never
 /// needs a config edit. The WebSocket endpoint prefers `MYX_SOLOIST_WS`
 /// so a running instance can be adopted without touching discovery.
-fn soloist_boot_options(volume: u8) -> myx::engine::BootOptions {
-    let soloist = &myx::config::get().soloist;
-    myx::engine::BootOptions {
+fn soloist_boot_options(volume: u8) -> soloist_tui::engine::BootOptions {
+    let soloist = &soloist_tui::config::get().soloist;
+    soloist_tui::engine::BootOptions {
         api_key: std::env::var("SOLOIST_API_KEY")
             .ok()
             .filter(|key| !key.is_empty())
@@ -378,7 +380,7 @@ async fn boot(
     }
 
     let restore_on_startup = should_restore_saved_playback(
-        myx::config::get().restore_on_startup,
+        soloist_tui::config::get().restore_on_startup,
         startup_uri.as_deref(),
         &saved,
     );
@@ -418,8 +420,8 @@ async fn boot(
 
     let media_controls = optional_integration(media_platform_ready, || {
         MediaControls::new(PlatformConfig {
-            dbus_name: "myx",
-            display_name: "Myx",
+            dbus_name: "soloist_tui",
+            display_name: "Soloist TUI",
             hwnd,
         })
     });
@@ -494,9 +496,9 @@ async fn boot(
             last_click: None,
         },
         art_repaint: ArtRepaint::Idle,
-        visualizer: Some(myx::audio::visualizer::spawn(
-            myx::config::get().visualizer_enabled,
-            myx::config::get().visualizer_sensitivity as f32,
+        visualizer: Some(soloist_tui::audio::visualizer::spawn(
+            soloist_tui::config::get().visualizer_enabled,
+            soloist_tui::config::get().visualizer_sensitivity as f32,
             String::new(),
             bands,
         )),
@@ -731,7 +733,7 @@ async fn run_ui(
                 let animating = app.theme.fade.is_some()
                     || (app.view.mode == RightView::Lyrics && app.view.lyrics_synced)
                     || (app.view.mode == RightView::NowPlaying
-                        && myx::config::get().visualizer_enabled
+                        && soloist_tui::config::get().visualizer_enabled
                         && app.svc.engine.bands.try_lock().map(|g| g.is_active).unwrap_or(false));
                 if app.art_repaint != ArtRepaint::Idle {
                     dirty = true;

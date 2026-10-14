@@ -1,6 +1,6 @@
 //! Diagnostic: check the Web API token + /me/playlists response.
 //!   cargo run --example libcheck
-use myx::webapi::WebApi;
+use soloist_tui::webapi::WebApi;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

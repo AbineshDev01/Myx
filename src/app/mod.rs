@@ -45,7 +45,7 @@ pub(crate) struct App {
     // because a socket is unavailable would be a worse player. Every use site
     // is a `if let Some(..)`, so `None` is simply inert.
     #[cfg(all(feature = "mxc", unix))]
-    pub(crate) mxc: Option<myx::mxc::publish::Publisher>,
+    pub(crate) mxc: Option<soloist_tui::mxc::publish::Publisher>,
     pub(crate) status: String,
     pub(crate) browse: BrowseState,
     pub(crate) transport: Transport,
@@ -55,7 +55,7 @@ pub(crate) struct App {
     // What the album art box owes the next frame. See ArtRepaint.
     pub(crate) art_repaint: ArtRepaint,
     #[allow(dead_code)]
-    pub(crate) visualizer: Option<myx::audio::VisualizerHandle>,
+    pub(crate) visualizer: Option<soloist_tui::audio::VisualizerHandle>,
 }
 
 impl App {

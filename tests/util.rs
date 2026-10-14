@@ -1,9 +1,9 @@
-//! Characterization tests for `myx::util`.
+//! Characterization tests for `soloist_tui::util`.
 //!
 //! These lock in the behavior the helpers have TODAY, quirks included.
 //! If one of these fails, someone changed behavior — deliberately or not.
 
-use myx::util::{center_v, fmt_ms, track_id_from_uri, truncate, uri_to_url, urlencode, vol_u16};
+use soloist_tui::util::{center_v, fmt_ms, track_id_from_uri, truncate, uri_to_url, urlencode, vol_u16};
 use ratatui::layout::Rect;
 
 // ---------------------------------------------------------------- truncate

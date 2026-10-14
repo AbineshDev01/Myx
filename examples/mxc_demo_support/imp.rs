@@ -71,13 +71,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::{Frame, Terminal};
 
-use myx::anim::{ease_in_out_cubic, ThemeFade};
-use myx::gradient::{lerp_color, Rgb};
-use myx::mxc::contrast::Contrast;
-use myx::mxc::subscribe::Subscriber;
-use myx::mxc::wire::{ByeEvent, Colors, Hex, Message, Origin, OriginKind, ThemeEvent};
-use myx::mxc::{now_ms, socket_path, PROTOCOL_VERSION};
-use myx::theme::{Theme, TOKYONIGHT};
+use soloist_tui::anim::{ease_in_out_cubic, ThemeFade};
+use soloist_tui::gradient::{lerp_color, Rgb};
+use soloist_tui::mxc::contrast::Contrast;
+use soloist_tui::mxc::subscribe::Subscriber;
+use soloist_tui::mxc::wire::{ByeEvent, Colors, Hex, Message, Origin, OriginKind, ThemeEvent};
+use soloist_tui::mxc::{now_ms, socket_path, PROTOCOL_VERSION};
+use soloist_tui::theme::{Theme, TOKYONIGHT};
 
 /// Frame budget while a cross-fade is running (~60fps).
 const FRAME: Duration = Duration::from_millis(16);
@@ -135,7 +135,7 @@ enum Conn {
     Link(Link),
     /// The publisher sent `bye`; we have reverted to our own default palette.
     /// Held until the next successful connect replaces it.
-    Bye(myx::mxc::ByeReason),
+    Bye(soloist_tui::mxc::ByeReason),
 }
 
 struct App {
@@ -186,7 +186,7 @@ impl App {
             }),
             origin: None,
             seq: 0,
-            is_dark: myx::mxc::contrast::is_dark(default_theme.background),
+            is_dark: soloist_tui::mxc::contrast::is_dark(default_theme.background),
             last_fade_ms: 0,
             applied: 0,
         }
@@ -232,7 +232,7 @@ impl App {
                 self.seq = seq;
                 self.origin = None;
                 self.conn = Conn::Bye(reason);
-                self.is_dark = myx::mxc::contrast::is_dark(self.default_theme.background);
+                self.is_dark = soloist_tui::mxc::contrast::is_dark(self.default_theme.background);
                 let (t, c) = (self.default_theme, self.default_contrast);
                 self.transition_to(t, c, 400);
             }
@@ -371,7 +371,7 @@ fn fake_source(tx: Sender<SourceEvent>) {
                 v: PROTOCOL_VERSION,
                 seq,
                 ts: now_ms(),
-                reason: myx::mxc::ByeReason::Reload,
+                reason: soloist_tui::mxc::ByeReason::Reload,
             })
         } else {
             let dark = n.is_multiple_of(2);
@@ -384,7 +384,7 @@ fn fake_source(tx: Sender<SourceEvent>) {
                 // Every fourth palette snaps, so `fade_ms: 0` is observably
                 // honored and not just "a very fast fade".
                 fade_ms: if n % 4 == 3 { 0 } else { 600 },
-                is_dark: myx::mxc::contrast::is_dark(colors.background.into()),
+                is_dark: soloist_tui::mxc::contrast::is_dark(colors.background.into()),
                 contrast: Contrast::compute(&colors),
                 colors,
             })
@@ -923,7 +923,7 @@ fn render_widgets(f: &mut Frame, app: &App, area: Rect) {
                 .bg(bg.into())
                 // `best_on` is the same math the publisher used for the
                 // `on_*` block; reusing it keeps chips readable on any hue.
-                .fg(myx::mxc::contrast::best_on(bg).into())
+                .fg(soloist_tui::mxc::contrast::best_on(bg).into())
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(" "));

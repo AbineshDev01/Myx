@@ -108,16 +108,16 @@ pub(crate) fn get_json_cached(
     url: &str,
     token: &str,
 ) -> Option<serde_json::Value> {
-    if let Some(body) = myx::httpcache::get(url, Some(CATALOGUE_TTL)) {
+    if let Some(body) = soloist_tui::httpcache::get(url, Some(CATALOGUE_TTL)) {
         return serde_json::from_str(&body).ok();
     }
     match get_json(client, url, token) {
         Some(v) => {
-            myx::httpcache::put(url, &v.to_string());
+            soloist_tui::httpcache::put(url, &v.to_string());
             Some(v)
         }
         None => {
-            let stale = myx::httpcache::get(url, None)?;
+            let stale = soloist_tui::httpcache::get(url, None)?;
             liblog(format!("api: {url} failed; serving cached copy"));
             serde_json::from_str(&stale).ok()
         }
@@ -126,7 +126,7 @@ pub(crate) fn get_json_cached(
 
 /// Album art bytes, from disk when they've been seen before.
 pub(crate) fn fetch_cover(client: &reqwest::blocking::Client, url: &str) -> Option<Vec<u8>> {
-    if let Some(bytes) = myx::httpcache::get_bytes(url) {
+    if let Some(bytes) = soloist_tui::httpcache::get_bytes(url) {
         return Some(bytes);
     }
     let resp = client.get(url).send().ok()?;
@@ -137,7 +137,7 @@ pub(crate) fn fetch_cover(client: &reqwest::blocking::Client, url: &str) -> Opti
         return None;
     }
     let bytes = resp.bytes().ok()?.to_vec();
-    myx::httpcache::put_bytes(url, &bytes);
+    soloist_tui::httpcache::put_bytes(url, &bytes);
     Some(bytes)
 }
 

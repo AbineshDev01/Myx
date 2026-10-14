@@ -1,6 +1,6 @@
 //! Verify the radio path returns similar tracks.
-use myx::engine;
-use myx::webapi::WebApi;
+use soloist_tui::engine;
+use soloist_tui::webapi::WebApi;
 use std::sync::{Arc, Mutex};
 
 #[tokio::main]

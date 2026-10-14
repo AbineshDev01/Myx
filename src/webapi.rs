@@ -43,12 +43,12 @@ fn scopes_tag() -> String {
     SCOPES.join(",")
 }
 
-/// The configured Spotify app client id: `MYX_CLIENT_ID`, else `client_id` in
-/// `~/.config/myx/config.toml`, else the older bare `~/.config/myx/client_id`
-/// file (still honoured so upgrading doesn't log anyone out). No default is
+/// The configured Spotify app client id: `SOLOIST_CLIENT_ID` (or `MYX_CLIENT_ID`),
+/// else `client_id` in `~/.config/soloist-tui/config.toml`, else the legacy file
+/// `~/.config/soloist-tui/client_id` or `~/.config/myx/client_id`. No default is
 /// bundled — every user brings their own app. Never prompts.
 fn configured_client_id() -> Option<String> {
-    if let Ok(id) = std::env::var("MYX_CLIENT_ID") {
+    if let Ok(id) = std::env::var("SOLOIST_CLIENT_ID").or_else(|_| std::env::var("MYX_CLIENT_ID")) {
         let id = id.trim().to_string();
         if !id.is_empty() {
             return Some(id);
@@ -61,11 +61,13 @@ fn configured_client_id() -> Option<String> {
         }
     }
     if let Some(home) = crate::home_dir() {
-        let path = home.join(".config/myx/client_id");
-        if let Ok(s) = std::fs::read_to_string(&path) {
-            let id = s.trim().to_string();
-            if !id.is_empty() {
-                return Some(id);
+        for rel in [".config/soloist-tui/client_id", ".config/myx/client_id"] {
+            let path = home.join(rel);
+            if let Ok(s) = std::fs::read_to_string(&path) {
+                let id = s.trim().to_string();
+                if !id.is_empty() {
+                    return Some(id);
+                }
             }
         }
     }
@@ -85,8 +87,8 @@ fn resolve_client_id() -> Result<String> {
 const NO_CLIENT_ID_HELP: &str = "\
 Create a free app at https://developer.spotify.com/dashboard
 (add redirect URI http://127.0.0.1:8989/login), then either:
-  export MYX_CLIENT_ID=<your-client-id>
-  or write client_id = \"<your-client-id>\" to ~/.config/myx/config.toml";
+  export SOLOIST_CLIENT_ID=<your-client-id>
+  or write client_id = \"<your-client-id>\" to ~/.config/soloist-tui/config.toml";
 
 /// A Spotify client id is 32 hex digits. Checking before saving means a typo
 /// is caught here, instead of being saved and failing every launch after.
@@ -249,7 +251,16 @@ impl WebApi {
     }
 
     fn cache_path() -> Option<PathBuf> {
-        Some(crate::home_dir()?.join(".cache/myx/webapi.json"))
+        let home = crate::home_dir()?;
+        let soloist_path = home.join(".cache/soloist-tui/webapi.json");
+        if soloist_path.exists() {
+            return Some(soloist_path);
+        }
+        let legacy_path = home.join(".cache/myx/webapi.json");
+        if legacy_path.exists() {
+            return Some(legacy_path);
+        }
+        Some(soloist_path)
     }
 
     fn from_cache(client_id: &str) -> Option<Self> {
@@ -334,7 +345,7 @@ fn authorize(client_id: &str) -> Result<(String, Option<String>, u64)> {
     let auth_url = format!("{AUTHORIZE_URL}?{query}");
 
     let _ = open::that_in_background(&auth_url);
-    println!("\nAuthorize myx for the Web API (playlists + metadata):\n{auth_url}\n");
+    println!("\nAuthorize soloist-tui for the Web API (playlists + metadata):\n{auth_url}\n");
 
     let code = listen_for_code()?;
 
@@ -370,7 +381,7 @@ fn authorize(client_id: &str) -> Result<(String, Option<String>, u64)> {
         .filter(|want| !granted.split(' ').any(|g| g == *want))
         .collect();
     if !missing.is_empty() {
-        eprintln!("myx: Spotify did not grant: {}", missing.join(", "));
+        eprintln!("soloist-tui: Spotify did not grant: {}", missing.join(", "));
     }
 
     Ok((access, refresh, expires_in))
@@ -387,7 +398,7 @@ fn listen_for_code() -> Result<String> {
         }
         let target = line.split_whitespace().nth(1).unwrap_or_default();
         if let Some(code) = code_from_target(target) {
-            respond(&mut stream, "myx authorized. You can close this tab.");
+            respond(&mut stream, "soloist-tui authorized. You can close this tab.");
             return Ok(code);
         }
         respond(&mut stream, "");

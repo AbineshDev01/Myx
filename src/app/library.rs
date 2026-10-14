@@ -244,7 +244,7 @@ impl Library {
                     .filter(|i| i.is_track())
                     .flat_map(|i| {
                         let mut v = vec![i.uri.clone()];
-                        if let Some(id) = myx::util::track_id_from_uri(&i.uri) {
+                        if let Some(id) = soloist_tui::util::track_id_from_uri(&i.uri) {
                             v.push(format!("spotify:track:{id}"));
                             v.push(id);
                         }
@@ -266,7 +266,7 @@ impl Library {
         if self.liked_uris.contains(uri) {
             return true;
         }
-        if let Some(id) = myx::util::track_id_from_uri(uri) {
+        if let Some(id) = soloist_tui::util::track_id_from_uri(uri) {
             let full = format!("spotify:track:{id}");
             if self.liked_uris.contains(&full) || self.liked_uris.contains(&id) {
                 return true;
@@ -277,7 +277,7 @@ impl Library {
 
     /// Optimistically update the liked state of a track URI.
     pub(crate) fn toggle_liked_uri(&mut self, uri: &str, saved: bool) {
-        let (full, id_opt) = if let Some(id) = myx::util::track_id_from_uri(uri) {
+        let (full, id_opt) = if let Some(id) = soloist_tui::util::track_id_from_uri(uri) {
             (format!("spotify:track:{id}"), Some(id))
         } else if uri.starts_with("spotify:track:") {
             (uri.to_string(), uri.strip_prefix("spotify:track:").map(String::from))

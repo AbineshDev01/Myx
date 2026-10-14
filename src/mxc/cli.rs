@@ -110,14 +110,14 @@ pub enum Parsed {
 
 /// The `--help` / usage text. Also printed to stderr on a usage error.
 pub const USAGE: &str = "\
-myx theme <get|watch> [options]
+soloist-tui theme <get|watch> [options]
 
   get      print the current palette (the snapshot) and exit
   watch    stream every palette update until killed
 
 Options:
   --format <sh|css|hex|json>   output format (default: sh)
-  --socket <path>              theme socket (default: $XDG_RUNTIME_DIR/myx/theme.sock)
+  --socket <path>              theme socket (default: $XDG_RUNTIME_DIR/soloist-tui/theme.sock)
   --exec <cmd>                 run `sh -c <cmd>` per update, MYX_* exported
   -h, --help                   show this help
 ";

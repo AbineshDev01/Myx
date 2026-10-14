@@ -1,14 +1,19 @@
 use crate::*;
 
 fn token() -> Option<String> {
-    let path = myx::home_dir()?.join(".cache/myx/webapi.json");
+    let home = soloist_tui::home_dir()?;
+    let path = if home.join(".cache/soloist-tui/webapi.json").exists() {
+        home.join(".cache/soloist-tui/webapi.json")
+    } else {
+        home.join(".cache/myx/webapi.json")
+    };
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_secs();
     if now + 30 >= v["expires_at"].as_u64().unwrap_or(0) {
-        eprintln!("cached token expired — run `myx` once, then retry");
+        eprintln!("cached token expired — run `soloist-tui` once, then retry");
         return None;
     }
     v["access_token"].as_str().map(str::to_string)

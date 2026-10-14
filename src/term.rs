@@ -20,8 +20,8 @@ pub type Term = Terminal<CrosstermBackend<Stdout>>;
 pub fn acquire_single_instance_lock() -> std::fs::File {
     use fs2::FileExt;
     let path = crate::home_dir()
-        .map(|h| h.join(".cache/myx/lock"))
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/myx.lock"));
+        .map(|h| h.join(".cache/soloist-tui/lock"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/soloist-tui.lock"));
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -32,7 +32,7 @@ pub fn acquire_single_instance_lock() -> std::fs::File {
         .open(&path)
         .expect("open lock file");
     if file.try_lock_exclusive().is_err() {
-        eprintln!("myx is already running (another instance holds the lock).");
+        eprintln!("soloist-tui is already running (another instance holds the lock).");
         eprintln!(
             "Close it first, or remove {} if it's stale.",
             path.display()

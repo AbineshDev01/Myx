@@ -1,4 +1,4 @@
-//! myx — a lean, beautiful terminal Spotify player.
+//! soloist-tui — a lean, beautiful terminal Spotify player.
 //!
 //! FE: the design-token system (noodle's visual language) ported to ratatui,
 //! plus album-art-reactive theming with cross-fades.
@@ -6,6 +6,8 @@
 //! real track-change events.
 
 use std::path::PathBuf;
+
+pub use crate as myx;
 
 pub mod anim;
 pub mod color;

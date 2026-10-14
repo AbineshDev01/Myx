@@ -25,7 +25,7 @@ pub(crate) struct ThemeState {
 /// The palette before any cover has arrived, with the background as configured.
 pub(crate) fn startup_theme() -> Theme {
     Theme {
-        transparent: myx::config::get().transparent,
+        transparent: soloist_tui::config::get().transparent,
         ..TOKYONIGHT
     }
 }
