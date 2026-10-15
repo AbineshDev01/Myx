@@ -141,6 +141,7 @@ transparent = true
 
 # Spotify Soloist playback backend settings
 #[soloist]
+#api_key = \"\"
 #device_name = \"soloist-tui\"
 #executable = \"soloist\"
 ";

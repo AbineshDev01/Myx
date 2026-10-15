@@ -190,11 +190,13 @@ visualizer_sensitivity = 1.0
 device_name = "soloist-tui"
 executable = "soloist"
 route_audio = false
+# api_key = "your-soloist-api-key" # Optional: Soloist API key
 # ws = "ws://127.0.0.1:24879" # Optional: specify explicit running Soloist WebSocket endpoint
 ```
 
 ### Environment Variables
 - `SOLOIST_CLIENT_ID` (or `MYX_CLIENT_ID`): Overrides `client_id` in config.toml.
+- `SOLOIST_API_KEY`: Soloist API key (passed to soloist via `--api-key`).
 - `SOLOIST_CONFIG` (or `MYX_CONFIG`): Specify custom path to `config.toml`.
 - `SOLOIST_DEVICE_NAME`: Overrides Spotify Connect device name.
 - `SOLOIST_NO_COLOR_SOCKET`: Set to `1` to disable the MXC color publishing socket.

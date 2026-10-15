@@ -1,0 +1,105 @@
+# ==============================================================================
+# soloist-tui - Configuration File Example
+# ==============================================================================
+# Default Location:
+#   Linux/macOS: ~/.config/soloist-tui/config.toml
+#   (Fallback:   ~/.config/myx/config.toml)
+#
+# Custom Path Override:
+#   export SOLOIST_CONFIG="/path/to/custom/config.toml"
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# General Settings
+# ------------------------------------------------------------------------------
+
+# Number of rows kept visible above and below the cursor when scrolling (like vim's scrolloff).
+# Default: 3
+scrolloff = 3
+
+# Restore the last played track, playback position, and context on startup (paused until play is pressed).
+# Default: true
+restore_on_startup = true
+
+# ------------------------------------------------------------------------------
+# Spotify Web API Authentication
+# ------------------------------------------------------------------------------
+
+# Your Spotify Developer Application Client ID.
+# Required for searching, playlists, user library, and album art metadata.
+# Can also be set via the SOLOIST_CLIENT_ID environment variable.
+# Create one at: https://developer.spotify.com/dashboard
+# Redirect URI: http://127.0.0.1:8989/callback
+client_id = "your-spotify-client-id-here"
+
+# ------------------------------------------------------------------------------
+# Display & Album Art
+# ------------------------------------------------------------------------------
+
+# Terminal graphics protocol for rendering high-resolution album art:
+# Options: "kitty", "iterm2", "sixel", "halfblocks"
+# Leave commented out or unset to auto-detect your terminal's capabilities.
+# protocol = "kitty"
+
+# Transparent background mode:
+# - true:  Inherits your terminal's background color, opacity, and blur.
+# - false: Fills background with adaptive, album-art-tinted palette.
+# Note: Press 'T' inside the app at any time to toggle this interactively.
+# Default: true
+transparent = true
+
+# ------------------------------------------------------------------------------
+# Audio & Playback Quality
+# ------------------------------------------------------------------------------
+
+# Streaming audio bitrate in kbps.
+# Supported Spotify values: 96, 160, 320.
+# Any other number gracefully falls back to 160.
+# Default: 160
+bitrate = 160
+
+# Volume normalization across tracks (equivalent to official Spotify client's "Normalize volume").
+# - true:  Even out perceived loudness across tracks.
+# - false: Preserve original track dynamic range.
+# Default: false
+normalize_volume = false
+
+# ------------------------------------------------------------------------------
+# Audio Visualizer
+# ------------------------------------------------------------------------------
+
+# Real-time FFT spectrum bar visualizer displayed alongside album art.
+# Default: true
+visualizer_enabled = true
+
+# Dynamic sensitivity multiplier for visualizer bar response (e.g., 0.5 to 2.0).
+# Default: 1.0
+visualizer_sensitivity = 1.0
+
+# ------------------------------------------------------------------------------
+# Soloist Backend Settings
+# ------------------------------------------------------------------------------
+[soloist]
+
+# Optional Spotify / Soloist API key (passed to soloist as --api-key <key>).
+# Can also be set via the SOLOIST_API_KEY environment variable.
+# api_key = "your-soloist-api-key"
+
+# Spotify Connect receiver device name broadcast to other Spotify apps.
+# Default: "soloist-tui"
+device_name = "soloist-tui"
+
+# Name or path of the Soloist receiver binary.
+# Default: "soloist"
+executable = "soloist"
+
+# Route audio through the internal loopback tap for real-time DSP & visualizer.
+# Default: false
+route_audio = false
+
+# Custom WebSocket endpoint if connecting to an already running external Soloist instance.
+# Omit or leave commented out to let soloist-tui discover or manage its own instance.
+# ws = "ws://127.0.0.1:24879"
+
+# Custom data directory for Soloist state/credentials (overrides default XDG data dir).
+# data_dir = "/path/to/custom/soloist/data"
