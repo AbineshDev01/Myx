@@ -47,9 +47,9 @@ use std::path::PathBuf;
 /// new `on_*` keys) do NOT bump this. Consumers ignore what they don't know.
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// Socket path: `$XDG_RUNTIME_DIR/myx/theme.sock`.
+/// Socket path: `$XDG_RUNTIME_DIR/soloist-tui/theme.sock`.
 ///
-/// Falls back to `/tmp/myx-$UID/theme.sock` when `XDG_RUNTIME_DIR` is unset
+/// Falls back to `/tmp/soloist-tui-$UID/theme.sock` when `XDG_RUNTIME_DIR` is unset
 /// (bare TTY logins, some minimal containers). The fallback is uid-scoped so
 /// two users on one box never collide.
 pub fn socket_path() -> PathBuf {
@@ -59,9 +59,9 @@ pub fn socket_path() -> PathBuf {
             // SAFETY: `getuid` is always safe — it cannot fail and touches no
             // memory we own.
             let uid = unsafe { libc_getuid() };
-            PathBuf::from(format!("/tmp/myx-{uid}"))
+            PathBuf::from(format!("/tmp/soloist-tui-{uid}"))
         });
-    dir.join("myx").join("theme.sock")
+    dir.join("soloist-tui").join("theme.sock")
 }
 
 /// Minimal `getuid` shim so the fallback path doesn't pull in a `libc`
@@ -100,8 +100,8 @@ mod tests {
         // instead assert the shape of whatever the environment yields.
         let p = socket_path();
         assert!(
-            p.ends_with("myx/theme.sock"),
-            "socket must always terminate in myx/theme.sock, got {p:?}"
+            p.ends_with("soloist-tui/theme.sock"),
+            "socket must always terminate in soloist-tui/theme.sock, got {p:?}"
         );
         assert!(p.is_absolute(), "socket path must be absolute, got {p:?}");
     }

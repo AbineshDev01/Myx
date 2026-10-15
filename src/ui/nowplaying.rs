@@ -31,7 +31,7 @@ pub(crate) fn render_nowplaying_view(
     let fw = font.width.max(1) as u32;
     let fh = font.height.max(1) as u32;
 
-    let show_visualizer = myx::config::get().visualizer_enabled && top.height >= 12;
+    let show_visualizer = soloist_tui::config::get().visualizer_enabled && top.height >= 12;
     let vis_h = if show_visualizer {
         if top.height >= 16 {
             (top.height / 3).clamp(4, 7)

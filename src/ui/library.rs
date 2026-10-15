@@ -111,7 +111,7 @@ pub(crate) fn render_library(
         app.browse.selected,
         cap,
         total_items,
-        myx::config::get().scrolloff,
+        soloist_tui::config::get().scrolloff,
     );
     out.hits.lib = Some(Rect {
         x: inner.x,

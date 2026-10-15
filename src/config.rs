@@ -68,7 +68,7 @@ impl Default for SoloistConfig {
     fn default() -> Self {
         Self {
             api_key: None,
-            device_name: "myx soloist".to_string(),
+            device_name: "soloist-tui".to_string(),
             executable: "soloist".to_string(),
             route_audio: false,
             ws: None,
@@ -105,16 +105,16 @@ pub fn get() -> &'static Config {
 /// Every key but `transparent` is commented out, so it parses to the defaults
 /// apart from the transparent background new installs start with.
 const TEMPLATE: &str = "\
-# myx settings. Every key is optional — uncomment one to change it.
+# soloist-tui settings. Every key is optional — uncomment one to change it.
 
 # Rows kept visible above and below the list cursor, like vim's scrolloff.
 #scrolloff = 3
 
-# Show the locally saved track, source and position when Myx starts, paused
+# Show the locally saved track, source and position when soloist-tui starts, paused
 # until you press play.
 #restore_on_startup = true
 
-# Spotify app client id. MYX_CLIENT_ID overrides this if it is set.
+# Spotify app client id. SOLOIST_CLIENT_ID (or MYX_CLIENT_ID) overrides this if it is set.
 #client_id = \"\"
 
 # Terminal graphics protocol: kitty, iterm2, sixel or halfblocks.
@@ -132,13 +132,35 @@ const TEMPLATE: &str = "\
 
 # Leave the background to the terminal — its own colour, opacity and blur —
 # instead of the album-tinted one. Text and accents still follow the cover.
-# Press T in myx to flip it; this line is rewritten when you do.
+# Press T in soloist-tui to flip it; this line is rewritten when you do.
 transparent = true
+
+# Liquid waveform visualizer
+#visualizer_enabled = true
+#visualizer_sensitivity = 1.0
+
+# Spotify Soloist playback backend settings
+#[soloist]
+#api_key = \"\"
+#device_name = \"soloist-tui\"
+#executable = \"soloist\"
 ";
 
 impl Config {
     pub fn path() -> Option<PathBuf> {
-        Some(crate::home_dir()?.join(".config/myx/config.toml"))
+        if let Ok(p) = std::env::var("SOLOIST_CONFIG").or_else(|_| std::env::var("MYX_CONFIG")) {
+            return Some(PathBuf::from(p));
+        }
+        let home = crate::home_dir()?;
+        let soloist_path = home.join(".config/soloist-tui/config.toml");
+        if soloist_path.exists() {
+            return Some(soloist_path);
+        }
+        let legacy_path = home.join(".config/myx/config.toml");
+        if legacy_path.exists() {
+            return Some(legacy_path);
+        }
+        Some(soloist_path)
     }
 
     fn load() -> Self {

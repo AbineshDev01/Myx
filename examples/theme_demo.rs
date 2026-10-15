@@ -19,11 +19,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::{Frame, Terminal};
 
-use myx::anim::ThemeFade;
-use myx::components::{gradient_line, gradient_pill, gradient_progress, left_bar_block, pill};
-use myx::cover::Cover;
-use myx::reactive::derive_theme;
-use myx::theme::{Theme, THEMES};
+use soloist_tui::anim::ThemeFade;
+use soloist_tui::components::{gradient_line, gradient_pill, gradient_progress, left_bar_block, pill};
+use soloist_tui::cover::Cover;
+use soloist_tui::reactive::derive_theme;
+use soloist_tui::theme::{Theme, THEMES};
 
 struct App {
     themes: Vec<Theme>,
@@ -132,7 +132,7 @@ fn render(f: &mut Frame, app: &mut App) {
     .split(area);
 
     // ---- Title (gradient heading) ----
-    let title: Vec<Span> = gradient_line("myx  —  design system", &[theme.primary, theme.accent]);
+    let title: Vec<Span> = gradient_line("soloist-tui  —  design system", &[theme.primary, theme.accent]);
     f.render_widget(Paragraph::new(Line::from(title)), rows[0]);
 
     // ---- Pill row: solid + gradient badges ----

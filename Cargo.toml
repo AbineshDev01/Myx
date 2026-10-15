@@ -1,16 +1,20 @@
 [package]
-name = "myx"
+name = "soloist-tui"
 version = "0.5.0"
 edition = "2021"
-description = "A lean, beautiful terminal Spotify player"
+description = "A lean, beautiful terminal Spotify player powered by Soloist"
 authors = ["Haseeb Khalid"]
 license = "MIT"
-repository = "https://github.com/HaseebKhalid1507/Myx"
-homepage = "https://github.com/HaseebKhalid1507/Myx"
+repository = "https://github.com/HaseebKhalid1507/soloist-tui"
+homepage = "https://github.com/HaseebKhalid1507/soloist-tui"
 readme = "README.md"
-keywords = ["spotify", "tui", "music", "player", "ratatui"]
+keywords = ["spotify", "tui", "music", "player", "ratatui", "soloist"]
 categories = ["command-line-utilities", "multimedia::audio"]
-default-run = "myx"
+default-run = "soloist-tui"
+
+[lib]
+name = "soloist_tui"
+path = "src/lib.rs"
 
 [dependencies]
 ratatui = "0.30.2"
@@ -93,7 +97,7 @@ streaming = [
 # a protocol-only build (`--no-default-features --features mxc`) skips the bin
 # instead of failing to compile it.
 [[bin]]
-name = "myx"
+name = "soloist-tui"
 path = "src/main.rs"
 required-features = ["streaming"]
 
@@ -131,8 +135,8 @@ depends = "libasound2, libssl3"
 section = "sound"
 priority = "optional"
 assets = [
-    ["target/release/myx", "usr/bin/", "755"],
-    ["README.md", "usr/share/doc/myx/README.md", "644"],
-    ["LICENSE", "usr/share/doc/myx/LICENSE", "644"],
-    ["NOTICE", "usr/share/doc/myx/NOTICE", "644"],
+    ["target/release/soloist-tui", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/soloist-tui/README.md", "644"],
+    ["LICENSE", "usr/share/doc/soloist-tui/LICENSE", "644"],
+    ["NOTICE", "usr/share/doc/soloist-tui/NOTICE", "644"],
 ]

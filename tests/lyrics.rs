@@ -1,9 +1,9 @@
-//! Characterization tests for `myx::lyrics::parse`.
+//! Characterization tests for `soloist_tui::lyrics::parse`.
 //!
 //! These lock in TODAY's LRC parsing behavior, quirks included. Where a former
 //! quirk was a crash reachable from remote input, the test now locks the fix.
 
-use myx::lyrics::parse::{parse_lrc, parse_lrc_stamp};
+use soloist_tui::lyrics::parse::{parse_lrc, parse_lrc_stamp};
 
 // ----------------------------------------------------------- parse_lrc_stamp
 

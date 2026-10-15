@@ -14,7 +14,7 @@ fn a_cover_palette_keeps_the_configured_transparent_background() {
         fade: None,
     };
 
-    state.start_fade(myx::theme::GRUVBOX);
+    state.start_fade(soloist_tui::theme::GRUVBOX);
 
     assert!(state.target.transparent);
     assert!(state.fade.as_ref().is_some_and(|f| f.current().transparent));
@@ -29,7 +29,7 @@ fn flipping_transparency_mid_fade_sticks_when_the_fade_lands() {
         target: TOKYONIGHT,
         fade: None,
     };
-    state.start_fade(myx::theme::GRUVBOX);
+    state.start_fade(soloist_tui::theme::GRUVBOX);
 
     state.set_transparent(true);
 

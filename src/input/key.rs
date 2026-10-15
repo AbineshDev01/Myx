@@ -201,7 +201,7 @@ pub(crate) fn handle_key(
                 }
             };
             if let Some((name, uri)) = target_track {
-                let id = myx::util::track_id_from_uri(&uri)
+                let id = soloist_tui::util::track_id_from_uri(&uri)
                     .or_else(|| if !uri.is_empty() && !uri.contains(':') { Some(uri.clone()) } else { None });
                 if let Some(id) = id {
                     let currently_liked = app.is_liked(&uri);
@@ -260,7 +260,7 @@ pub(crate) fn handle_key(
         KeyCode::Char('T') => {
             let on = !app.theme.target.transparent;
             app.theme.set_transparent(on);
-            app.status = match myx::config::Config::save_transparent(on) {
+            app.status = match soloist_tui::config::Config::save_transparent(on) {
                 Ok(()) => format!("transparent background {}", if on { "on" } else { "off" }),
                 Err(e) => format!("background switched, but config.toml was not saved: {e}"),
             };

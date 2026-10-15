@@ -42,10 +42,8 @@ pub(crate) fn render(f: &mut Frame, app: &App, out: &mut FrameOut, repaint: ArtR
     .split(area);
 
     // Header: wordmark + view tabs (right-aligned) + status.
-    // Fullwidth wordmark (each letter = 2 cells) reads as a bigger "myx"
-    // than the terminal font allows on a single row; bolded for weight.
     let mut header: Vec<Span> =
-        gradient_line("\u{FF2D}\u{FF39}\u{FF38}", &[theme.primary, theme.accent])
+        gradient_line("SOLOIST TUI", &[theme.primary, theme.accent])
             .into_iter()
             .map(|mut sp| {
                 sp.style = sp.style.add_modifier(Modifier::BOLD);

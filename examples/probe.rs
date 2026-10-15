@@ -9,15 +9,15 @@
 
 use std::io::BufRead;
 
-use myx::engine::{self, EngineEvent};
+use soloist_tui::engine::{self, EngineEvent};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    println!("myx-probe: authenticating…");
+    println!("soloist-tui probe: authenticating…");
     let (tx, rx) = flume::unbounded::<EngineEvent>();
-    let opts = myx::engine::BootOptions {
+    let opts = soloist_tui::engine::BootOptions {
         api_key: std::env::var("SOLOIST_API_KEY").ok(),
         device_name: "myx-probe".to_string(),
         executable: "soloist".to_string(),

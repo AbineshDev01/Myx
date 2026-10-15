@@ -246,7 +246,7 @@ pub(crate) fn apply_meta(
 /// a consumer's cross-fade cannot drift out of sync with Myx's own.
 #[cfg(all(feature = "mxc", unix))]
 fn publish_theme(app: &App, theme: &Theme) {
-    use myx::mxc::{Origin, OriginKind};
+    use soloist_tui::mxc::{Origin, OriginKind};
 
     let Some(publisher) = app.mxc.as_ref() else {
         return;
