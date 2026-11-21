@@ -22,6 +22,7 @@ async fn main() -> anyhow::Result<()> {
         device_name: "myx-probe".to_string(),
         executable: "soloist".to_string(),
         route_audio: false,
+        normalize_volume: false,
         explicit_ws: std::env::var("MYX_SOLOIST_WS").ok(),
         data_dir: None,
         volume: 50,

@@ -41,6 +41,8 @@ pub struct StartOptions {
     /// Route Soloist's audio through myx's loopback tap so
     /// the equalizer keeps working.
     pub route_audio: bool,
+    /// Whether Soloist should apply Spotify's loudness normalization.
+    pub normalize_volume: bool,
     /// Override Soloist's data directory (sets
     /// `STATE_DIRECTORY` for the child).
     pub data_dir: Option<PathBuf>,
@@ -95,6 +97,8 @@ impl SoloistProcess {
                  `MYX_SOLOIST_WS` / `[soloist] ws` to its endpoint."
             );
         }
+
+        apply_normalization_pref(&data_dir, opts.normalize_volume);
 
         let api_key = opts.api_key;
         let device_name = opts.device_name;
@@ -371,6 +375,58 @@ fn mentions_option_error(text: &str) -> bool {
         || lower.contains("unexpected parameter")
 }
 
+/// Soloist's per-user pref that toggles loudness normalization.
+const NORMALIZE_PREF: &str = "audio.normalize_v2";
+
+/// Make Soloist's loudness normalization match `normalize_volume`.
+///
+/// Soloist normalizes every track by default, which pulls loud masters down
+/// by many dB (measured ~9 dB on a loud track) — far quieter than the web
+/// player at the same slider position. There is no CLI flag or WebSocket
+/// command for it, so it is set through the user prefs file Soloist reads
+/// at startup. That file only exists after the first login, so the very
+/// first run keeps Soloist's default; failures are never fatal.
+fn apply_normalization_pref(data_dir: &Path, normalize: bool) {
+    let Ok(users) = std::fs::read_dir(data_dir.join("settings").join("Users")) else {
+        return;
+    };
+    for entry in users.flatten() {
+        let path = entry.path().join("prefs");
+        let current = std::fs::read_to_string(&path).unwrap_or_default();
+        let updated = upsert_pref(&current, NORMALIZE_PREF, normalize);
+        if updated != current {
+            if let Err(err) = std::fs::write(&path, updated) {
+                log::warn!(
+                    target: "myx::soloist",
+                    "could not update {}: {err}",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
+/// Set `key=value` in a prefs file body, replacing an existing line.
+fn upsert_pref(content: &str, key: &str, value: bool) -> String {
+    let line = format!("{key}={value}");
+    let mut found = false;
+    let mut out: Vec<String> = content
+        .lines()
+        .map(|l| {
+            if l.split('=').next() == Some(key) {
+                found = true;
+                line.clone()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+    if !found {
+        out.push(line);
+    }
+    out.join("\n") + "\n"
+}
+
 /// If a Soloist is already running and exposes its WebSocket
 /// API, return its endpoint so Myx can reuse it.
 fn reuse_running(data_dir: &Path) -> Option<discovery::Endpoint> {
@@ -407,6 +463,23 @@ fn shutdown_child(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upsert_pref_adds_or_replaces_the_key() {
+        assert_eq!(
+            upsert_pref("a=1\n", "audio.normalize_v2", false),
+            "a=1\naudio.normalize_v2=false\n"
+        );
+        assert_eq!(
+            upsert_pref(
+                "audio.normalize_v2=true\na=1\n",
+                "audio.normalize_v2",
+                false
+            ),
+            "audio.normalize_v2=false\na=1\n"
+        );
+        assert_eq!(upsert_pref("", "k", true), "k=true\n");
+    }
 
     #[test]
     fn option_errors_are_detected() {

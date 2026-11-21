@@ -127,6 +127,9 @@ pub struct BootOptions {
     /// Route Soloist's audio through myx's equalizer
     /// via the loopback tap.
     pub route_audio: bool,
+    /// Apply Spotify's loudness normalization (off by default —
+    /// see `apply_normalization_pref`).
+    pub normalize_volume: bool,
     /// Explicit WebSocket endpoint (`host:port`).
     /// When set, endpoint discovery is skipped.
     pub explicit_ws: Option<String>,
@@ -169,6 +172,7 @@ impl Engine {
             device_name: opts.device_name,
             executable: opts.executable,
             route_audio: opts.route_audio,
+            normalize_volume: opts.normalize_volume,
             data_dir: opts.data_dir,
             equalizer: Arc::clone(&equalizer),
             bands: Arc::clone(&bands),

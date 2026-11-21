@@ -340,6 +340,7 @@ fn soloist_boot_options(volume: u8) -> soloist_tui::engine::BootOptions {
             .filter(|path| !path.is_empty())
             .unwrap_or_else(|| soloist.executable.clone()),
         route_audio: soloist.route_audio,
+        normalize_volume: soloist_tui::config::get().normalize_volume,
         explicit_ws: std::env::var("MYX_SOLOIST_WS")
             .ok()
             .filter(|endpoint| !endpoint.is_empty())
